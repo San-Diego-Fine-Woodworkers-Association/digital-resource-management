@@ -1,28 +1,28 @@
 services:
-  traefik:
-    image: traefik:v3.6
-    container_name: traefik
-    ports:
-      - "80:80"
-      - "443:443"
-      - "8080:8080" # Temporary
-    networks:
-      - frontend
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - "./letsencrypt:/letsencrypt"
-    command:
-      - "--providers.docker=true"
-      - "--entrypoints.web.address=:80"
-      - "--entrypoints.websecure.address=:443"
-      # Redirect HTTP to HTTPS automatically
-      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
-      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
-      # Let's Encrypt Config
-      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
-      - "--certificatesresolvers.myresolver.acme.email=${LETSENCRYPT_EMAIL}"
-      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
-      - "--providers.docker.network=frontend"
+  # traefik:
+  #   image: traefik:v3.6
+  #   container_name: traefik
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #     - "8080:8080" # Temporary
+  #   networks:
+  #     - frontend
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #     - "./letsencrypt:/letsencrypt"
+  #   command:
+  #     - "--providers.docker=true"
+  #     - "--entrypoints.web.address=:80"
+  #     - "--entrypoints.websecure.address=:443"
+  #     # Redirect HTTP to HTTPS automatically
+  #     - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+  #     - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+  #     # Let's Encrypt Config
+  #     - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+  #     - "--certificatesresolvers.myresolver.acme.email=${LETSENCRYPT_EMAIL}"
+  #     - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+  #     - "--providers.docker.network=frontend"
 
   resourcespace:
     build: .
@@ -42,14 +42,14 @@ services:
     networks:
       - frontend
       - backend
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.resourcespace.rule=Host(`${DOMAIN_NAME}`)"
-      # - "traefik.http.routers.resourcespace.entrypoints=websecure"
-      - "traefik.http.routers.resourcespace.entrypoints=web" # Use HTTP for local testing
-      - "traefik.http.routers.resourcespace.tls.certresolver=myresolver"
-      - "traefik.http.services.resourcespace.loadbalancer.server.port=80"
-      - "traefik.docker.network=resourcespace_frontend"
+    # labels:
+    #   - "traefik.enable=true"
+    #   - "traefik.http.routers.resourcespace.rule=Host(`${DOMAIN_NAME}`)"
+    #   # - "traefik.http.routers.resourcespace.entrypoints=websecure"
+    #   - "traefik.http.routers.resourcespace.entrypoints=web" # Use HTTP for local testing
+    #   - "traefik.http.routers.resourcespace.tls.certresolver=myresolver"
+    #   - "traefik.http.services.resourcespace.loadbalancer.server.port=80"
+    #   - "traefik.docker.network=resourcespace_frontend"
 
   mariadb:
     image: mariadb
@@ -74,10 +74,10 @@ services:
     networks:
       - frontend
       - backend
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.adminer.rule=Host(`db.localhost`)"
-      - "traefik.http.routers.adminer.entrypoints=web"
+    # labels:
+    #   - "traefik.enable=true"
+    #   - "traefik.http.routers.adminer.rule=Host(`db.localhost`)"
+    #   - "traefik.http.routers.adminer.entrypoints=web"
 
 networks:
   frontend:
