@@ -1,8 +1,39 @@
 services:
+  traefik:
+    image: traefik:v3.6
+    container_name: traefik
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080" # Temporary
+    networks:
+      - frontend
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - "./letsencrypt:/letsencrypt"
+    command:
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # Redirect HTTP to HTTPS automatically
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+      # Let's Encrypt Config
+      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+      - "--certificatesresolvers.myresolver.acme.email=${LETSENCRYPT_EMAIL}"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+      - "--providers.docker.network=frontend"
+
   resourcespace:
     build: .
     container_name: resourcespace
     restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_USER=${MYSQL_ROOT_USER}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_READ_ONLY_USER}
+      - MYSQL_PASSWORD=${MYSQL_READ_ONLY_PASSWORD}
     depends_on:
       - mariadb
     volumes:
@@ -11,19 +42,42 @@ services:
     networks:
       - frontend
       - backend
-    ports:
-      - "80:80"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.resourcespace.rule=Host(`${DOMAIN_NAME}`)"
+      # - "traefik.http.routers.resourcespace.entrypoints=websecure"
+      - "traefik.http.routers.resourcespace.entrypoints=web" # Use HTTP for local testing
+      - "traefik.http.routers.resourcespace.tls.certresolver=myresolver"
+      - "traefik.http.services.resourcespace.loadbalancer.server.port=80"
+      - "traefik.docker.network=resourcespace_frontend"
 
   mariadb:
     image: mariadb
     container_name: mariadb
     restart: unless-stopped
-    env_file:
-      - db.env
+    environment:
+      - DB_HOST=mariadb
+      - MARIADB_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MARIADB_DATABASE=${MYSQL_DATABASE}
+      - MARIADB_USER=${MYSQL_READ_ONLY_USER}
+      - MARIADB_PASSWORD=${MYSQL_READ_ONLY_PASSWORD}
+      - SCRAMBLE_KEY=${SCRAMBLE_KEY}
+      - DOMAIN_NAME=${DOMAIN_NAME}
     volumes:
       - mariadb:/var/lib/mysql
     networks:
       - backend
+
+  adminer:
+    image: adminer
+    restart: unless-stopped
+    networks:
+      - frontend
+      - backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.adminer.rule=Host(`db.localhost`)"
+      - "traefik.http.routers.adminer.entrypoints=web"
 
 networks:
   frontend:
