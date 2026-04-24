@@ -41,6 +41,7 @@ services:
     networks:
       - frontend
       - backend
+      - dokploy-network
     # labels:
     #   - "traefik.enable=true"
     #   - "traefik.http.routers.resourcespace.rule=Host(`${DOMAIN_NAME}`)"
@@ -81,6 +82,8 @@ services:
 networks:
   frontend:
   backend:
+  dokploy-network:
+    external: true
 
 volumes:
   mariadb:
