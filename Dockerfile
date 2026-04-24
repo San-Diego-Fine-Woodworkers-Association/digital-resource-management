@@ -59,5 +59,9 @@ RUN rm -f index.html \
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# Copy the config from your repo into the image
+COPY config.php /var/www/html/include/config.php
+RUN chown www-data:www-data /var/www/html/include/config.php
+
 # Start both cron and Apache
 CMD ["/entrypoint.sh"]
