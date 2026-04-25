@@ -8,7 +8,7 @@
 # Options may be copied from config.default.php and configured here.
 
 # MySQL database settings
-$mysql_server = 'mariadb';
+$mysql_server = getenv('MYSQL_SERVER');
 $mysql_username = getenv('MYSQL_ROOT_USER');
 $mysql_password = getenv('MYSQL_ROOT_PASSWORD');
 $read_only_db_username = getenv('MYSQL_READ_ONLY_USER');
@@ -17,7 +17,7 @@ $mysql_db = getenv('MYSQL_DATABASE');
 
 $domain = getenv('DOMAIN_NAME') ?: 'localhost';
 // Use HTTPS if you're in production, otherwise HTTP
-$protocol = (getenv('DOMAIN_NAME') && getenv('DOMAIN_NAME') !== 'localhost') ? 'https://' : 'http://';
+$protocol = (getenv('STAGE') === 'production' || $domain !== 'localhost') ? 'https://' : 'http://';
 
 # Base URL of the installation
 $baseurl = $protocol . $domain;
