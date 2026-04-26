@@ -19,6 +19,11 @@ $domain = getenv('DOMAIN_NAME') ?: 'localhost';
 // Use HTTPS if you're in production, otherwise HTTP
 $protocol = (getenv('STAGE') === 'production' || $domain !== 'localhost') ? 'https://' : 'http://';
 
+if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
+    $_SERVER['HTTPS'] = 'on';
+    $_SERVER['SERVER_PORT'] = 443;
+}
+
 # Base URL of the installation
 $baseurl = $protocol . $domain;
 
