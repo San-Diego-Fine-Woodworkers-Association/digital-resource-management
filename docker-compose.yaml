@@ -19,16 +19,16 @@ services:
       - frontend
       - backend
       - dokploy-network
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.resourcespace.rule=Host(`${DOMAIN_NAME}`)"
-      - "traefik.http.routers.resourcespace.entrypoints=websecure"
-      - "traefik.http.routers.resourcespace.tls.certresolver=letsencrypt"
-      - "traefik.http.services.resourcespace.loadbalancer.server.port=80"
+    deploy:
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.resourcespace.rule=Host(`${DOMAIN_NAME}`)"
+        - "traefik.http.routers.resourcespace.entrypoints=websecure"                          
+        - "traefik.http.routers.resourcespace.tls.certresolver=letsencrypt"                   
+        - "traefik.http.services.resourcespace.loadbalancer.server.port=80"
 
   mariadb:
     image: mariadb
-    container_name: mariadb
     restart: unless-stopped
     environment:
       - DB_HOST=mariadb
