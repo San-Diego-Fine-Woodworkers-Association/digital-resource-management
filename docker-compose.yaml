@@ -20,7 +20,6 @@ services:
     depends_on:
       - mariadb
     volumes:
-      - rs_config:/var/www/html/include
       - rs_assets:/var/www/html/filestore
     networks:
       - frontend
@@ -64,5 +63,4 @@ networks:
 
 volumes:
   mariadb:
-  rs_config:
   rs_assets:
