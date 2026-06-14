@@ -16,11 +16,12 @@ services:
       - API_SCRAMBLE_KEY=${API_SCRAMBLE_KEY}
       - EMAIL_NOTIFY=${EMAIL_NOTIFY}
       - EMAIL_FROM=${EMAIL_FROM}
+      - SIMPLESAML_ADMIN_PASSWORD_HASH=${SIMPLESAML_ADMIN_PASSWORD_HASH}
     depends_on:
       - mariadb
     volumes:
-      - rs_config:/var/www/html/include
       - rs_assets:/var/www/html/filestore
+      - rs_plugins:/var/www/html/plugins
     networks:
       - frontend
       - backend
@@ -63,5 +64,5 @@ networks:
 
 volumes:
   mariadb:
-  rs_config:
   rs_assets:
+  rs_plugins:

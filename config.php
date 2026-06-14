@@ -94,3 +94,61 @@ $hide_real_filepath = true;
 $annotate_enabled = true;
 
 $plugins[] = "brand_guidelines";
+
+$simplesamlconfig['authsources'] = 
+        [
+        'admin' => ['core:AdminPassword'],
+        'resourcespace-sp' => [
+        'saml:SP',
+        'privatekey' => '/var/www/html/filestore/system/saml_6a2f03087abbb.pem',
+        'certificate' => '/var/www/html/filestore/system/saml_6a2f03087abbf.crt',
+        'entityID' => null,
+        'idp' => 'https://accounts.google.com/o/saml2?idpid=C01h8wmv1',
+        'discoURL' => null,
+        ]
+    ];
+
+$simplesamlconfig["config"]["technicalcontact_name"] = 'SDFWA Digital Services';
+$simplesamlconfig["config"]["auth.adminpassword"] = getenv('SIMPLESAML_ADMIN_PASSWORD_HASH');
+
+$simplesamlconfig["metadata"]['https://accounts.google.com/o/saml2?idpid=C01h8wmv1'] = array (
+  'entityid' => 'https://accounts.google.com/o/saml2?idpid=C01h8wmv1',
+  'contacts' => 
+  array (
+  ),
+  'metadata-set' => 'saml20-idp-remote',
+  'expire' => 1931121227,
+  'SingleSignOnService' => 
+  array (
+    0 => 
+    array (
+      'Binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect',
+      'Location' => 'https://accounts.google.com/o/saml2/idp?idpid=C01h8wmv1',
+    ),
+    1 => 
+    array (
+      'Binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST',
+      'Location' => 'https://accounts.google.com/o/saml2/idp?idpid=C01h8wmv1',
+    ),
+  ),
+  'SingleLogoutService' => 
+  array (
+  ),
+  'ArtifactResolutionService' => 
+  array (
+  ),
+  'NameIDFormats' => 
+  array (
+    0 => 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
+  ),
+  'keys' => 
+  array (
+    0 => 
+    array (
+      'encryption' => false,
+      'signing' => true,
+      'type' => 'X509Certificate',
+      'X509Certificate' => 'MIIDdjCCAl6gAwIBAgIGAZzpVZtrMA0GCSqGSIb3DQEBCwUAMHwxFDASBgNVBAoTC0dvb2dsZSBJbmMuMRYwFAYDVQQHEw1Nb3VudGFpbiBWaWV3MQ8wDQYDVQQDEwZHb29nbGUxGTAXBgNVBAsTEEdvb2dsZSBXb3Jrc3BhY2UxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpDYWxpZm9ybmlhMB4XDTI2MDMxMzIyMzM0N1oXDTMxMDMxMjIyMzM0N1owfDEUMBIGA1UEChMLR29vZ2xlIEluYy4xFjAUBgNVBAcTDU1vdW50YWluIFZpZXcxDzANBgNVBAMTBkdvb2dsZTEZMBcGA1UECxMQR29vZ2xlIFdvcmtzcGFjZTELMAkGA1UEBhMCVVMxEzARBgNVBAgTCkNhbGlmb3JuaWEwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDB2uXd+sXhs5jwh6yP923DjCtZ4saAa8QYFUis4gsDLJEPFIp26i1VUQA2UHZFfhHh82OmdI8/zpcWccfzOUOo0Ujl2JYXdaJI8g1/Rw/ckYyWGyj5wzs//hmXs0pAfFAh7+bzMCpo1VJvly00nLmUkd8g0wTQ4vPaEidybPeSVPn5DoK48Vqokp12pZQUwkTGsaNS937v7p5vaCziEpCHE2CG0rIGobj167BnDkVrkr+fII2Zc6Sr/RP3jNVTSXAOAKi84ULyL8X7V+TeD1lWgPALagTdJKuZWhx9enHmECepXUHT+FGIkk/hws2GzYTMEdS26rBeQmUCfAJbDAmNAgMBAAEwDQYJKoZIhvcNAQELBQADggEBAI1PHXov/87GrZloI+JvtSWUcwbWOFQNdJV3RFx/KmXaKXMPj9kBLlHTOANUOppIHAwmr96tWfdiCpb1ceNXsh5vsaQcFOuluDEKODdqhM/V/2Vgn80q6Jjkc+/ySyspG805a7tSwJEiGtjKKson3pozI/+0P6bilvBraQ3wJ1vu6LdCozGCja0A3g7iIxQwZjmbrSCX+rfM+l3k5YtMJ2X9iFD2ebS02oIaNlZv3BmpG07pdM1u0N60mJmtYcIvpUaSWtGV4970GwQLW08HcOEi/rKHTCcVP0oinPSyWwa8XJ0QSEruImyLcu5LdSsgNsLBJSBcEXBzdFiFBzxNBuU=',
+    ),
+  ),
+);
