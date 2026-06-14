@@ -52,7 +52,8 @@ RUN rm -f index.html \
  && svn co -q https://svn.resourcespace.com/svn/rs/releases/10.7 . \
  && mkdir -p filestore \
  && chmod 777 filestore \
- && chmod -R 777 include/
+ && chmod -R 777 include/ \
+ && chmod -R 777 plugins/
  
 
 # Copy custom entrypoint script
