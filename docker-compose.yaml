@@ -16,6 +16,7 @@ services:
       - API_SCRAMBLE_KEY=${API_SCRAMBLE_KEY}
       - EMAIL_NOTIFY=${EMAIL_NOTIFY}
       - EMAIL_FROM=${EMAIL_FROM}
+      - SIMPLESAML_ADMIN_PASSWORD_HASH=${SIMPLESAML_ADMIN_PASSWORD_HASH}
     depends_on:
       - mariadb
     volumes:
