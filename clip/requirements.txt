@@ -1,0 +1,22 @@
+# CPU-only ML stack for the CLIP service.
+# Primary index is the PyTorch CPU wheel repo so torch/torchvision resolve to the
+# smaller +cpu builds (no CUDA); everything else falls back to PyPI.
+--index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://pypi.org/simple
+
+torch==2.12.1
+torchvision==0.27.1
+fastapi==0.138.2
+uvicorn==0.49.0
+ftfy==6.3.1
+regex==2026.6.28
+tqdm==4.68.3
+pillow==12.2.0
+numpy==2.5.0
+requests==2.34.2
+mysql-connector-python==9.7.0
+python-multipart==0.0.32
+faiss-cpu==1.14.3
+
+# OpenAI CLIP, pinned to a commit for reproducible builds.
+git+https://github.com/openai/CLIP.git@d05afc436d78f1c48dc0dbf8e5980a9d471f35f6

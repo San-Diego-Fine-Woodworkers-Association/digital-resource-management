@@ -47,7 +47,7 @@ services:
     depends_on:
       - mariadb
     volumes:
-      - clip_cache:/app/cache
+      - clip_cache:/root/.cache
     networks:
       - backend
 

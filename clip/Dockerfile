@@ -14,35 +14,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 # CPU-only ML stack for the CLIP service (see plugins/clip/readme.txt).
-RUN pip install \
-        fastapi \
-        uvicorn \
-        torch \
-        torchvision \
-        ftfy \
-        regex \
-        tqdm \
-        pillow \
-        numpy \
-        requests \
-        mysql-connector-python \
-        python-multipart \
-        faiss-cpu \
- && pip install git+https://github.com/openai/CLIP.git
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install -r /tmp/requirements.txt
 
 WORKDIR /app
 
 # Pull the CLIP service script from the same RS release as the core image so the
-# service stays in lockstep with the plugin. Keep this pinned to releases/11.0.
-RUN svn export -q https://svn.resourcespace.com/svn/rs/releases/11.0/plugins/clip/scripts /app/scripts
+# service stays in lockstep with the plugin. Pinned to the revision the core
+# image is built from (keep in sync with the Dockerfile svn checkout).
+RUN svn export -q -r 29265 https://svn.resourcespace.com/svn/rs/releases/11.0/plugins/clip/scripts /app/scripts
 
 # clip_service.py hardcodes the MySQL host to "localhost"; in a separate
 # container the database lives in the "mariadb" service, so make the host honor
-# the CLIP_DB_HOST environment variable.
-RUN sed -i 's/"host": "localhost"/"host": os.environ.get("CLIP_DB_HOST", "localhost")/' /app/scripts/clip_service.py
+# the CLIP_DB_HOST environment variable. Fail the build if the expected line is
+# gone (upstream changed it) rather than shipping a service that can't reach the DB.
+RUN sed -i 's/"host": "localhost"/"host": os.environ.get("CLIP_DB_HOST", "localhost")/' /app/scripts/clip_service.py \
+ && grep -q 'os.environ.get("CLIP_DB_HOST"' /app/scripts/clip_service.py
 
-# Cache the downloaded CLIP model + tag databases here (mount a volume to persist).
-ENV TORCH_HOME=/app/cache
+# The CLIP model downloads to ~/.cache/clip and torch.hub to ~/.cache/torch;
+# mount the clip_cache volume at /root/.cache to persist both across rebuilds.
 
 WORKDIR /app/scripts
 
