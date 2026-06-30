@@ -17,8 +17,10 @@ services:
       - EMAIL_NOTIFY=${EMAIL_NOTIFY}
       - EMAIL_FROM=${EMAIL_FROM}
       - SIMPLESAML_ADMIN_PASSWORD_HASH=${SIMPLESAML_ADMIN_PASSWORD_HASH}
+      - CLIP_SERVICE_URL=http://clip:8000
     depends_on:
       - mariadb
+      - clip
     volumes:
       - rs_assets:/var/www/html/filestore
       - rs_plugins:/var/www/html/plugins
@@ -32,6 +34,20 @@ services:
       - "traefik.http.routers.resourcespace.entrypoints=websecure"
       - "traefik.http.routers.resourcespace.tls.certresolver=letsencrypt"
       - "traefik.http.services.resourcespace.loadbalancer.server.port=80"
+
+  clip:
+    build: ./clip
+    restart: unless-stopped
+    environment:
+      - CLIP_DB_HOST=mariadb
+      - CLIP_DB_USER=${MYSQL_ROOT_USER}
+      - CLIP_DB_PASS=${MYSQL_ROOT_PASSWORD}
+    depends_on:
+      - mariadb
+    volumes:
+      - clip_cache:/app/cache
+    networks:
+      - backend
 
   mariadb:
     image: mariadb
@@ -66,3 +82,4 @@ volumes:
   mariadb:
   rs_assets:
   rs_plugins:
+  clip_cache:

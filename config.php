@@ -93,7 +93,10 @@ $file_checksums = true;
 $hide_real_filepath = true;
 $annotate_enabled = true;
 
-$plugins[] = "brand_guidelines";
+# CLIP AI Smart Search. The CLIP plugin ships bundled in RS 11 core; the
+# heavy ML inference runs in the separate "clip" container (see docker-compose).
+$plugins[] = "clip";
+$clip_service_url = getenv('CLIP_SERVICE_URL') ?: 'http://clip:8000';
 
 $simplesamlconfig['authsources'] = 
         [
