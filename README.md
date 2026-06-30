@@ -23,8 +23,38 @@ The [AI Faces](https://www.resourcespace.com/knowledge-base/plugins/faces) plugi
 
 The default InsightFace `buffalo_l` model is used under its **free non-commercial allowance** — SDFWA is a non-profit. The model downloads automatically on first run and is cached in the `faces_models` volume.
 
-Before tagging, create a **Dynamic Keywords List** field to hold person names and set `$faces_tag_field` in `config.php` to that field's ID. Detection and auto-tagging run on upload; to process existing resources:
+## How face tagging works
+
+The plugin separates **detection** (finding faces in images) from **identification** (putting a name to a face). Names are stored in a metadata field you create, and `$faces_tag_field` tells the plugin which field that is.
+
+### 1. Create the "person names" field
+In ResourceSpace, go to **Admin → System → Manage metadata fields → Create new field** and create a field of type **Dynamic Keywords List** (e.g. named "Named people"). This is the field that will hold one keyword per person. A Dynamic Keywords List lets the list of names grow over time as you add people.
+
+### 2. Point `$faces_tag_field` at that field's ref
+Each metadata field has a numeric **ref** (its ID). Find it in the field list — it's the `ref=` value in the edit URL (`.../pages/admin/admin_field_edit.php?ref=NN`), also shown in the field listing. Set that number in `config.php`:
+```php
+$faces_tag_field = NN;   // ref of your "Named people" Dynamic Keywords List field
+```
+The default in the plugin is `29`, which almost certainly is **not** your field — set it explicitly or detection-on-upload will write to the wrong (or a non-existent) field.
+
+### 3. Detect faces
+Run detection so the service finds faces and generates a vector for each. Detected faces then appear as clickable boxes on the resource view page:
 ```
 docker compose exec resourcespace php /var/www/html/plugins/faces/scripts/faces_detect.php
+```
+New uploads are detected automatically (`$faces_detect_on_upload = true`).
+
+### 4. Name the people (one-time, manual)
+On a resource's view page, click each detected face and assign a person from your **Named people** field. This is what teaches the system who is who — the assigned name is linked to that face's vector. You only need to do this for a handful of clear examples per person.
+
+### 5. Auto-tag the rest
+`faces_tag.php` compares every detected (but unnamed) face against the named ones and applies the matching name when the similarity clears the threshold. Run it for existing resources after naming examples:
+```
 docker compose exec resourcespace php /var/www/html/plugins/faces/scripts/faces_tag.php
 ```
+New uploads are auto-tagged automatically (`$faces_tag_on_upload = true`).
+
+### Tuning thresholds (in `config.php` / plugin settings)
+- `$faces_confidence_threshold` (default `0.7`) — minimum confidence for a detected region to count as a face. Raise it to drop false detections (e.g. patterns mistaken for faces).
+- `$faces_match_threshold` (default `0.3`) — similarity required to consider two faces the *same person* when searching/comparing.
+- `$faces_tag_threshold` (default `0.5`) — similarity required before **auto-tagging** applies a name. Raise it to be more conservative (fewer wrong names); lower it to tag more aggressively.
