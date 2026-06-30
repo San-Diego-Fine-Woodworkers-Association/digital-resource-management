@@ -19,4 +19,12 @@ docker compose restart clip
 New uploads are vectorised automatically.
 
 # AI Faces (InsightFace)
-Intentionally **not installed** for now. The default `buffalo_l` model requires a commercial license for non-research use unless covered by a Montala support/hosting contract. Resolve licensing before adding the `faces` plugin and its service.
+The [AI Faces](https://www.resourcespace.com/knowledge-base/plugins/faces) plugin is enabled in `config.php`. Its CPU-only inference service runs as a separate `faces` container (see `faces/Dockerfile` and the `faces` service in `docker-compose.yaml`), reachable from ResourceSpace at `http://faces:8001` via `FACES_SERVICE_URL`. It connects to `mariadb` with the root credentials.
+
+The default InsightFace `buffalo_l` model is used under its **free non-commercial allowance** — SDFWA is a non-profit. The model downloads automatically on first run and is cached in the `faces_models` volume.
+
+Before tagging, create a **Dynamic Keywords List** field to hold person names and set `$faces_tag_field` in `config.php` to that field's ID. Detection and auto-tagging run on upload; to process existing resources:
+```
+docker compose exec resourcespace php /var/www/html/plugins/faces/scripts/faces_detect.php
+docker compose exec resourcespace php /var/www/html/plugins/faces/scripts/faces_tag.php
+```

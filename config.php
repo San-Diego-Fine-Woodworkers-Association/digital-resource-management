@@ -98,6 +98,13 @@ $annotate_enabled = true;
 $plugins[] = "clip";
 $clip_service_url = getenv('CLIP_SERVICE_URL') ?: 'http://clip:8000';
 
+# AI Faces (InsightFace). Bundled in RS 11 core; inference runs in the separate
+# "faces" container. Used under the InsightFace free non-commercial allowance
+# (SDFWA is a non-profit). Set $faces_tag_field to a Dynamic Keywords List field
+# (created in the field admin) that stores person names.
+$plugins[] = "faces";
+$faces_service_endpoint = getenv('FACES_SERVICE_URL') ?: 'http://faces:8001';
+
 $simplesamlconfig['authsources'] = 
         [
         'admin' => ['core:AdminPassword'],

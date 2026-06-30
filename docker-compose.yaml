@@ -18,9 +18,11 @@ services:
       - EMAIL_FROM=${EMAIL_FROM}
       - SIMPLESAML_ADMIN_PASSWORD_HASH=${SIMPLESAML_ADMIN_PASSWORD_HASH}
       - CLIP_SERVICE_URL=http://clip:8000
+      - FACES_SERVICE_URL=http://faces:8001
     depends_on:
       - mariadb
       - clip
+      - faces
     volumes:
       - rs_assets:/var/www/html/filestore
       - rs_plugins:/var/www/html/plugins
@@ -46,6 +48,20 @@ services:
       - mariadb
     volumes:
       - clip_cache:/app/cache
+    networks:
+      - backend
+
+  faces:
+    build: ./faces
+    restart: unless-stopped
+    environment:
+      - FACES_DB_HOST=mariadb
+      - FACES_DB_USER=${MYSQL_ROOT_USER}
+      - FACES_DB_PASS=${MYSQL_ROOT_PASSWORD}
+    depends_on:
+      - mariadb
+    volumes:
+      - faces_models:/root/.insightface
     networks:
       - backend
 
@@ -83,3 +99,4 @@ volumes:
   rs_assets:
   rs_plugins:
   clip_cache:
+  faces_models:
