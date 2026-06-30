@@ -1,0 +1,9 @@
+# CPU-only face-recognition stack for the AI Faces service.
+fastapi==0.138.2
+uvicorn==0.49.0
+insightface==1.0.1
+onnxruntime==1.27.0
+faiss-cpu==1.14.3
+opencv-python-headless==4.13.0.92
+python-multipart==0.0.32
+mysql-connector-python==9.7.0
