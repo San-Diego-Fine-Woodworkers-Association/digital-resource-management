@@ -6,11 +6,19 @@ ENV DEBIAN_FRONTEND="noninteractive" \
     PIP_NO_CACHE_DIR=1
 
 # subversion to export the plugin scripts; build tooling because insightface
-# compiles native extensions during install.
+# compiles native extensions during install. insightface pulls in the full
+# opencv-python (not headless), whose cv2 extension links libGL / libxcb / libX*
+# at import time, so those runtime libs must be present on this slim base.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     subversion \
     build-essential \
     cmake \
+    libgl1 \
+    libglib2.0-0 \
+    libxcb1 \
+    libxext6 \
+    libxrender1 \
+    libsm6 \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
