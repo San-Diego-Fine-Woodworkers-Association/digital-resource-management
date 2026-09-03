@@ -16,9 +16,11 @@ jobs:
     - name: Check out the repo
       uses: actions/checkout@v3
 
-    - name: Get short SHA
-      id: short-sha
-      run: echo "::set-output name=sha::$(echo $GITHUB_SHA | cut -c1-6)"
+    - name: Prepare image metadata
+      id: meta
+      run: |
+        echo "sha=$(echo "$GITHUB_SHA" | cut -c1-6)" >> "$GITHUB_OUTPUT"
+        echo "repo=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@v2
@@ -34,5 +36,5 @@ jobs:
         file: ./Dockerfile
         push: true
         tags: |
-          ghcr.io/${{ github.repository }}/resourcespace:latest
-          ghcr.io/${{ github.repository }}/resourcespace:${{ steps.short-sha.outputs.sha }}
+          ghcr.io/${{ steps.meta.outputs.repo }}/resourcespace:latest
+          ghcr.io/${{ steps.meta.outputs.repo }}/resourcespace:${{ steps.meta.outputs.sha }}
