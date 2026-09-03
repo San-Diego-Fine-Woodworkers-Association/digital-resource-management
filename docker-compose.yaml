@@ -25,7 +25,6 @@ services:
       - faces
     volumes:
       - rs_assets:/var/www/html/filestore
-      - rs_plugins:/var/www/html/plugins
     networks:
       - frontend
       - backend
@@ -97,6 +96,5 @@ networks:
 volumes:
   mariadb:
   rs_assets:
-  rs_plugins:
   clip_cache:
   faces_models:
