@@ -6,7 +6,7 @@ The official Docker image for ResourceSpace. Full build instructions can be foun
 * When setting up ResourceSpace ensure you enter "mariadb" as the MySQL server instead of "localhost" and leave the "MySQL binary path" empty.
 
 # ResourceSpace version
-This deployment runs ResourceSpace **11.0**, pinned to SVN revision `29265` (`releases/11.0 -r 29265`) in the `Dockerfile`. The `clip` and `faces` service images export their scripts at the same revision to stay in lockstep with core — bump all three together when upgrading. After upgrading from a previous version, **back up the MariaDB database first**, then log in as admin — ResourceSpace will prompt to run the 11.0 schema upgrade.
+This deployment runs ResourceSpace **11.0**, pinned to SVN revision `29660` (`releases/11.0 -r 29660`) in the `Dockerfile`. The `clip` and `faces` service images export their scripts at the same revision to stay in lockstep with core — bump all three together when upgrading. After upgrading from a previous version, **back up the MariaDB database first**, then log in as admin — ResourceSpace will prompt to run the 11.0 schema upgrade.
 
 # CLIP AI Smart Search
 The [CLIP AI Smart Search](https://www.resourcespace.com/knowledge-base/plugins/clip-ai-smart-search) plugin is enabled in `config.php`. Its CPU-only inference service runs as a separate `clip` container (see `clip/Dockerfile` and the `clip` service in `docker-compose.yaml`), reachable from ResourceSpace at `http://clip:8000` via `CLIP_SERVICE_URL`. The service connects to the `mariadb` database using the root credentials to read/write the `resource_clip_vector` table.
