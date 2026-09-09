@@ -87,6 +87,48 @@ services:
       - frontend
       - backend
 
+  # Backup sidecar: stages consistent DB dumps + a filestore mirror onto the
+  # `backups` volume on a schedule. An off-site box pulls that volume over
+  # rsync/SSH. See docs/backups.md and docs/onprem-pull-setup.md.
+  backup:
+    build: ./backup
+    restart: unless-stopped
+    environment:
+      - TZ=${BACKUP_TZ:-America/Los_Angeles}
+      - BACKUP_CRON=${BACKUP_CRON:-0 2 * * *}
+      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-7}
+      - BACKUP_ON_START=${BACKUP_ON_START:-false}
+      # Optional: an age public key. If set, an encrypted secrets snapshot is
+      # included in each backup so it is self-contained. Leave blank to skip.
+      - BACKUP_SECRETS_AGE_RECIPIENT=${BACKUP_SECRETS_AGE_RECIPIENT:-}
+      # DB connection (root, for a full dump) + secrets for the optional snapshot.
+      - MYSQL_SERVER=${MYSQL_SERVER}
+      - MYSQL_ROOT_USER=${MYSQL_ROOT_USER}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_READ_ONLY_USER=${MYSQL_READ_ONLY_USER}
+      - MYSQL_READ_ONLY_PASSWORD=${MYSQL_READ_ONLY_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - DB_NAME=${DB_NAME}
+      - SCRAMBLE_KEY=${SCRAMBLE_KEY}
+      - API_SCRAMBLE_KEY=${API_SCRAMBLE_KEY}
+      - EMAIL_NOTIFY=${EMAIL_NOTIFY}
+      - EMAIL_FROM=${EMAIL_FROM}
+      - SIMPLESAML_ADMIN_PASSWORD_HASH=${SIMPLESAML_ADMIN_PASSWORD_HASH}
+      - DOMAIN_NAME=${DOMAIN_NAME}
+    depends_on:
+      - mariadb
+    volumes:
+      - rs_assets:/data/filestore:ro   # read-only: the sidecar never writes assets
+      - backups:/backups
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+      interval: 1h
+      timeout: 10s
+      retries: 2
+      start_period: 15m
+
 networks:
   frontend:
   backend:
@@ -98,3 +140,4 @@ volumes:
   rs_assets:
   clip_cache:
   faces_models:
+  backups:

@@ -8,6 +8,16 @@ The official Docker image for ResourceSpace. Full build instructions can be foun
 # ResourceSpace version
 This deployment runs ResourceSpace **11.0**, pinned to SVN revision `29660` (`releases/11.0 -r 29660`) in the `Dockerfile`. The `clip` and `faces` service images export their scripts at the same revision to stay in lockstep with core — bump all three together when upgrading. After upgrading from a previous version, **back up the MariaDB database first**, then log in as admin — ResourceSpace will prompt to run the 11.0 schema upgrade.
 
+# Backups & recovery
+A `backup` sidecar (see `backup/` and the `backup` service in `docker-compose.yaml`) stages nightly, consistent backups onto a `backups` volume: a `--single-transaction` MariaDB dump, an incremental mirror of the `rs_assets` filestore, and — optionally — an age-encrypted snapshot of the deployment secrets. An off-site box then **pulls** that volume over read-only, command-locked rsync/SSH, keeping dated snapshots (3-2-1). The `clip_cache`/`faces_models` volumes are intentionally skipped (regenerable).
+
+- **[docs/backups.md](docs/backups.md)** — what's covered, the sidecar, config vars, day-to-day operation.
+- **[docs/restore.md](docs/restore.md)** — disaster-recovery runbook (single DB, or full rebuild) + quarterly test-restore checklist.
+- **[docs/onprem-pull-setup.md](docs/onprem-pull-setup.md)** — set up the off-site/on-prem pull box (restricted account, encrypted-at-rest, scheduling).
+- Helper scripts in `scripts/`: `restore-db.sh`, `setup-onprem-pull.sh` (server), `onprem-pull.sh` (off-site box).
+
+> A full restore also needs the Dokploy environment secrets (`SCRAMBLE_KEY`, DB passwords, SAML admin hash) — without `SCRAMBLE_KEY` the filestore can't be read. Capture them via `BACKUP_SECRETS_AGE_RECIPIENT` or keep them in a password manager. See `docs/backups.md`.
+
 # CLIP AI Smart Search
 The [CLIP AI Smart Search](https://www.resourcespace.com/knowledge-base/plugins/clip-ai-smart-search) plugin is enabled in `config.php`. Its CPU-only inference service runs as a separate `clip` container (see `clip/Dockerfile` and the `clip` service in `docker-compose.yaml`), reachable from ResourceSpace at `http://clip:8000` via `CLIP_SERVICE_URL`. The service connects to the `mariadb` database using the root credentials to read/write the `resource_clip_vector` table.
 
