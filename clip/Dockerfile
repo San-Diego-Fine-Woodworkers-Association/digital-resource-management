@@ -22,7 +22,7 @@ WORKDIR /app
 # Pull the CLIP service script from the same RS release as the core image so the
 # service stays in lockstep with the plugin. Pinned to the revision the core
 # image is built from (keep in sync with the Dockerfile svn checkout).
-RUN svn export -q -r 29265 https://svn.resourcespace.com/svn/rs/releases/11.0/plugins/clip/scripts /app/scripts
+RUN svn export -q -r 29660 https://svn.resourcespace.com/svn/rs/releases/11.0/plugins/clip/scripts /app/scripts
 
 # clip_service.py hardcodes the MySQL host to "localhost"; in a separate
 # container the database lives in the "mariadb" service, so make the host honor

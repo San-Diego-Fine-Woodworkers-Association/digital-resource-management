@@ -30,7 +30,7 @@ WORKDIR /app
 
 # Keep the service script in lockstep with RS core. Pinned to the revision the
 # core image is built from (keep in sync with the Dockerfile svn checkout).
-RUN svn export -q -r 29265 https://svn.resourcespace.com/svn/rs/releases/11.0/plugins/faces/scripts /app/scripts
+RUN svn export -q -r 29660 https://svn.resourcespace.com/svn/rs/releases/11.0/plugins/faces/scripts /app/scripts
 
 # faces_service.py binds uvicorn to 127.0.0.1; in a container it must listen on
 # all interfaces so the resourcespace service can reach it. Fail the build if the
