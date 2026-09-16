@@ -9,12 +9,13 @@ The official Docker image for ResourceSpace. Full build instructions can be foun
 This deployment runs ResourceSpace **11.0**, pinned to SVN revision `29660` (`releases/11.0 -r 29660`) in the `Dockerfile`. The `clip` and `faces` service images export their scripts at the same revision to stay in lockstep with core — bump all three together when upgrading. After upgrading from a previous version, **back up the MariaDB database first**, then log in as admin — ResourceSpace will prompt to run the 11.0 schema upgrade.
 
 # Backups & recovery
-A `backup` sidecar (see `backup/` and the `backup` service in `docker-compose.yaml`) stages nightly, consistent backups onto a `backups` volume: a `--single-transaction` MariaDB dump, an incremental mirror of the `rs_assets` filestore, and — optionally — an age-encrypted snapshot of the deployment secrets. An off-site box then **pulls** that volume over read-only, command-locked rsync/SSH, keeping dated snapshots (3-2-1). The `clip_cache`/`faces_models` volumes are intentionally skipped (regenerable).
+A `backup` sidecar (see `backup/` and the `backup` service in `docker-compose.yaml`) stages nightly, consistent backups onto a `backups` volume: a `--single-transaction` MariaDB dump, an incremental mirror of the `rs_assets` filestore, and — optionally — an age-encrypted snapshot of the deployment secrets. The sidecar then **pushes** that to a Hetzner Storage Box (copy 2), and an off-site/on-prem box **pulls** from the Storage Box over a read-only rsync/SSH sub-account, keeping dated snapshots (copy 3, 3-2-1). The `clip_cache`/`faces_models` volumes are intentionally skipped (regenerable).
 
 - **[docs/backups.md](docs/backups.md)** — what's covered, the sidecar, config vars, day-to-day operation.
 - **[docs/restore.md](docs/restore.md)** — disaster-recovery runbook (single DB, or full rebuild) + quarterly test-restore checklist.
-- **[docs/onprem-pull-setup.md](docs/onprem-pull-setup.md)** — set up the off-site/on-prem pull box (restricted account, encrypted-at-rest, scheduling).
-- Helper scripts in `scripts/`: `restore-db.sh`, `setup-onprem-pull.sh` (server), `onprem-pull.sh` (off-site box).
+- **[docs/storagebox-setup.md](docs/storagebox-setup.md)** — provision the Storage Box push/pull sub-accounts and Snapshots.
+- **[docs/onprem-pull-setup.md](docs/onprem-pull-setup.md)** — set up the off-site/on-prem pull box against the Storage Box (encrypted-at-rest, scheduling).
+- Helper scripts in `scripts/`: `restore-db.sh`, `onprem-pull.sh` (off-site box, now points at the Storage Box), `setup-onprem-pull.sh` (legacy direct-to-server pull — see storagebox-setup.md).
 
 > A full restore also needs the Dokploy environment secrets (`SCRAMBLE_KEY`, DB passwords, SAML admin hash) — without `SCRAMBLE_KEY` the filestore can't be read. Capture them via `BACKUP_SECRETS_AGE_RECIPIENT` or keep them in a password manager. See `docs/backups.md`.
 

@@ -7,12 +7,14 @@
 # See docs/backups.md and docs/onprem-pull-setup.md.
 FROM alpine:3.20
 
-# mariadb-client -> mariadb-dump; rsync -> filestore mirror + on-prem pull;
+# mariadb-client -> mariadb-dump; rsync -> filestore mirror + Storage Box push;
+# openssh-client -> ssh transport for the Storage Box push (rsync -e ssh);
 # age -> optional secret encryption; coreutils/findutils -> stat/find -delete;
 # tzdata -> TZ-aware cron; tini -> clean PID 1 / signal handling.
 RUN apk add --no-cache \
     mariadb-client \
     rsync \
+    openssh-client \
     gzip \
     age \
     coreutils \
