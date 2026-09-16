@@ -106,6 +106,29 @@ if [ -n "$SECRETS_AGE_RECIPIENT" ]; then
   } | age -r "$SECRETS_AGE_RECIPIENT" -o "$secret_out"
   ln -sf "$(basename "$secret_out")" "$BACKUP_DIR/secrets/secrets-latest.env.age"
   log "Secrets snapshot OK: secrets/$(basename "$secret_out") (encrypted)"
+
+  # README always reflects the CURRENT run's outcome, so a state left behind
+  # by a prior config (e.g. this var was unset last night) can't linger and
+  # contradict what's actually in this directory.
+  cat > "$BACKUP_DIR/secrets/README.txt" <<EOF
+Secrets ARE captured here, age-encrypted, refreshed on every backup run.
+
+Latest: secrets/secrets-latest.env.age -> secrets-$ts.env.age
+
+To recover, on a machine holding the PRIVATE age key (never store it on
+either server):
+  age -d -i <your-private-key-file> secrets-latest.env.age
+
+That decrypts to the Dokploy environment variables needed for a full
+restore (SCRAMBLE_KEY, API_SCRAMBLE_KEY, MYSQL_ROOT_PASSWORD,
+MYSQL_READ_ONLY_PASSWORD, SIMPLESAML_ADMIN_PASSWORD_HASH, ...). Without
+SCRAMBLE_KEY specifically, a restored filestore is present but unreadable.
+
+Dated snapshots (secrets-<ts>.env.age) are pruned after
+${RETENTION_DAYS} day(s), same window as the DB dumps — use a dated one
+instead of -latest to match secrets to a specific historical night.
+See docs/restore.md.
+EOF
 else
   cat > "$BACKUP_DIR/secrets/README.txt" <<EOF
 Secrets are NOT captured here (BACKUP_SECRETS_AGE_RECIPIENT is unset).
@@ -119,6 +142,11 @@ Export these from the Dokploy UI (this stack -> Environment) and store them
 in your password manager / encrypted vault. To capture them here automatically
 (encrypted), set BACKUP_SECRETS_AGE_RECIPIENT to an age public key.
 See docs/restore.md.
+
+Note: if any secrets-<ts>.env.age files are present alongside this file,
+they are leftover snapshots from before capture was turned off — still
+valid for their own timestamp, and pruned by the normal ${RETENTION_DAYS}-day
+retention window like everything else, not by this setting changing.
 EOF
   log "No age recipient set — wrote secrets/README.txt reminder instead."
 fi

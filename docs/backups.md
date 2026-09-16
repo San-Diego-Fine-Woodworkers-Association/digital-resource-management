@@ -51,6 +51,14 @@ unreadable by RS. Two ways to cover this:
    (this stack → Environment) into your password manager. The sidecar writes
    `secrets/README.txt` as a reminder.
 
+Either way, `secrets/README.txt` is rewritten on **every** run to describe
+that run's actual outcome (captured-with-recovery-instructions, or
+not-captured-with-a-reminder) — so it can never be a leftover from a config
+that no longer applies, e.g. after toggling `BACKUP_SECRETS_AGE_RECIPIENT` on
+or off between runs. Dated `secrets-<ts>.env.age` snapshots from before a
+toggle-off are left in place and age out on the normal
+`BACKUP_RETENTION_DAYS` schedule, independent of the current setting.
+
 ## The backup sidecar
 
 A small Alpine container (`backup/`) added to `docker-compose.yaml`. It runs
