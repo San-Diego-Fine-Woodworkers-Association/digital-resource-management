@@ -1,90 +1,37 @@
 # Off-site / On-prem Pull Setup
 
-Wire up the off-site box that pulls the staged backups. Do this **when the box
-exists**; until then the sidecar still stages backups on the server (copy 1) —
-this adds the off-site copy (copy 2) and history.
+Wire up the on-prem box that pulls backups down for good — the third copy in
+the 3-2-1 scheme, and the one that survives even Hetzner's account being gone.
 
-**Model:** the on-prem box initiates an rsync-over-SSH **pull**. The server holds
-no credentials into your network. The pull account is read-only, command-locked,
-and source-pinned, so a compromised on-prem box gets read-only access to the
-backup staging directory and nothing else.
+**Model:** the backup sidecar **pushes** its staged backups to a Hetzner
+Storage Box (copy 2); the on-prem box then **pulls** from that Storage Box
+over rsync/SSH (copy 3), using a **read-only** sub-account. The on-prem box
+never talks to the ResourceSpace server directly — it only ever reaches the
+Storage Box, and can't write to it even if compromised.
 
 ```
-on-prem box  ──ssh (key: command="rrsync -ro", from=<on-prem IP>)──►  server:/var/backups/resourcespace
-     │                                                                         ▲
-     └── mirror/ + dated snapshots/ (on an ENCRYPTED volume)          staged by the backup sidecar
+resourcespace server ──push (RW sub-account)──►  Storage Box  ◄──pull (RO sub-account)── on-prem box
+   (backup sidecar)                                                                    mirror/ + snapshots/
+                                                                                        (on an ENCRYPTED volume)
 ```
+
+> Provision the Storage Box and both sub-accounts first —
+> [storagebox-setup.md](./storagebox-setup.md). This doc picks up from there:
+> you should already have a **read-only** sub-account (username + host) and
+> its keypair before continuing.
 
 ## Prerequisites
-- The on-prem box (any Linux with `rsync`, `ssh`, `cron`/systemd). A **static or
-  known egress IP** is strongly preferred (pins the key and firewall). If it's
-  dynamic, you can widen `from=`/UFW to a range or a dynamic-DNS-updated rule.
-- Server-side priming already done (from `Digital-Services-Init`): UFW + SSH
-  hardening + fail2ban. This adds a narrower rule on top.
+- The on-prem box (any Linux with `rsync`, `ssh`, `cron`/systemd).
+- The Storage Box's **read-only pull sub-account** set up per
+  [storagebox-setup.md](./storagebox-setup.md), with its keypair generated on
+  this box and the pinned host key from that doc's step 7.
 
 ---
 
-## Step 1 — Expose the backups to a low-privilege user (server)
+## Step 1 — Encrypt the destination at rest (on-prem)
 
-The sidecar writes to the `backups` **named volume**, which lives under
-`/var/lib/docker/volumes/…` — a path non-root users cannot even traverse. Give a
-low-privilege user a readable path by pointing the volume at a host directory.
-
-In Dokploy, add a bind mount for the backup sidecar (Advanced → Volumes), or set
-it in an override so the `backups` volume maps to a host path:
-
-```yaml
-# docker-compose.override.yaml (or the equivalent Dokploy volume setting)
-services:
-  backup:
-    volumes:
-      - /var/backups/resourcespace:/backups
-```
-
-```bash
-sudo mkdir -p /var/backups/resourcespace
-# redeploy the stack so the sidecar writes here, then confirm a backup lands:
-ls -la /var/backups/resourcespace/db
-```
-
-> Switching the volume discards the *old* staged copy (dumps + mirror) — that's
-> fine, the next run repopulates it. Do this before the first off-site pull.
-
-## Step 2 — Generate a key pair (on-prem box)
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/rs_backup -C "onprem-backup" -N ""
-cat ~/.ssh/rs_backup.pub    # copy this; it goes to the server in step 3
-```
-Keep the **private** key on the on-prem box only.
-
-## Step 3 — Grant read-only pull access (server, as root)
-
-Copy the on-prem **public** key to the server, then run the helper from this repo:
-
-```bash
-ONPREM_PUBKEY=/root/onprem_backup.pub \
-ONPREM_IP=<on-prem-egress-ip> \
-BACKUP_SRC=/var/backups/resourcespace \
-sudo -E bash scripts/setup-onprem-pull.sh
-```
-
-It creates the `rsbackup` user (no sudo), grants it read-only ACLs on
-`/var/backups/resourcespace` (including a default ACL so nightly files inherit
-access), installs the key **command-locked** to `rrsync -ro` and **pinned** to
-the on-prem IP, and adds a UFW allow for SSH from that IP.
-
-Verify the lock actually holds:
-```bash
-# from the on-prem box:
-rsync -az --dry-run -e "ssh -i ~/.ssh/rs_backup" rsbackup@<server-ip>: /tmp/rs-test/  # works
-ssh -i ~/.ssh/rs_backup rsbackup@<server-ip> 'id'                                     # MUST fail
-```
-
-## Step 4 — Encrypt the destination at rest (on-prem)
-
-Backups contain the database and (if enabled) secrets. Put the destination on an
-encrypted volume:
+Backups contain the database and (if enabled) secrets. Put the destination on
+an encrypted volume:
 
 ```bash
 # example: LUKS on a dedicated disk/partition, mounted at /srv/backups
@@ -95,14 +42,17 @@ sudo mkdir -p /srv/backups && sudo mount /dev/mapper/rsbackup /srv/backups
 (Automate unlock with a keyfile on the boot disk, or a TPM/`systemd-cryptenroll`,
 per your threat model.)
 
-## Step 5 — Schedule the pull (on-prem)
+## Step 2 — Schedule the pull (on-prem)
 
-Use `scripts/onprem-pull.sh` from this repo. Run it a bit **after** the server's
-backup window (default 02:00 PT → pull at, say, 03:30).
+Use `scripts/onprem-pull.sh` from this repo, unchanged — only what `SERVER`
+points at has changed (the Storage Box's RO sub-account, not the
+ResourceSpace server). Run it a bit **after** the server's backup *and* push
+window (default backup at 02:00 PT; push follows immediately after, so 03:30
+is comfortable).
 
 ```bash
 # test once by hand:
-SERVER=rsbackup@<server-ip> SSH_KEY=~/.ssh/rs_backup \
+SERVER=<pull-user>@<box-host> SSH_KEY=~/.ssh/storagebox_pull SSH_PORT=23 \
 DEST=/srv/backups/resourcespace bash scripts/onprem-pull.sh
 ```
 
@@ -110,14 +60,15 @@ Then a systemd timer:
 ```ini
 # /etc/systemd/system/rs-backup-pull.service
 [Unit]
-Description=Pull ResourceSpace backups from the server
+Description=Pull ResourceSpace backups from the Storage Box
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-Environment=SERVER=rsbackup@<server-ip>
-Environment=SSH_KEY=/root/.ssh/rs_backup
+Environment=SERVER=<pull-user>@<box-host>
+Environment=SSH_KEY=/root/.ssh/storagebox_pull
+Environment=SSH_PORT=23
 Environment=DEST=/srv/backups/resourcespace
 Environment=SNAP_RETENTION=30
 ExecStart=/opt/digital-resource-management/scripts/onprem-pull.sh
@@ -140,14 +91,23 @@ sudo systemctl enable --now rs-backup-pull.timer
 systemctl list-timers rs-backup-pull.timer
 ```
 
+`onprem-pull.sh` takes `SSH_PORT` already (defaults to 22) — Storage Boxes
+require **23** for rsync/SSH, so it must be set explicitly as shown above.
+
 The pull keeps `mirror/` (latest) plus hardlinked dated `snapshots/<ts>/`
 (default 30 kept), and spot-checks the newest DB dump with `gzip -t`.
 
-## Step 6 — Monitor
+## Step 3 — Monitor
 - Point a dead-man's-switch (e.g. Healthchecks.io) at the end of the pull: append
   `&& curl -fsS <ping-url>` so you're alerted if a night is missed.
-- The server sidecar's own healthcheck (`BACKUP_MAX_AGE_HOURS`) surfaces a
-  stalled staging step in `docker ps` / Dokploy.
+- The server sidecar's own healthcheck (`BACKUP_MAX_AGE_HOURS`) now only
+  reports healthy once the **push to the Storage Box** also succeeds (see
+  `backup.sh`'s `.backup-ok` handling) — a stalled push surfaces there, not
+  just a stalled local stage.
+- Storage Box's own Snapshots (enabled in `storagebox-setup.md` step 3) are
+  your backstop if the RW push credential is ever misused — check
+  periodically that snapshots are actually accumulating in the Robot UI, not
+  just configured.
 
 ## Restoring from what you pulled
 See [restore.md](./restore.md) → "Restoring from the off-site box".
@@ -155,13 +115,20 @@ See [restore.md](./restore.md) → "Restoring from the off-site box".
 ---
 
 ## Hardening notes / rationale
-- **`command="rrsync -ro …"`** — the key can *only* run a read-only rsync rooted
-  at the backup dir. No shell, no other command.
-- **`restrict`** — disables pty, port/agent/X11 forwarding.
-- **`from="<ip>"`** — the key is rejected from any other source address.
-- **ACLs, not root** — the pull user reads via a granted ACL; it isn't in
-  `docker`/`sudo` and can't reach the rest of the box.
-- **Encrypted at rest** — the off-site copy holds your DB and secrets; treat it
+- **Pull, read-only** — the on-prem box's sub-account is read-only at the
+  Storage Box level; even a fully compromised on-prem box can't alter or
+  delete the off-site copy.
+- **The server never talks to on-prem** — it only pushes to the Storage Box.
+  A compromised ResourceSpace server can at worst tamper with the Storage Box
+  copy (mitigated by Storage Box Snapshots); it has no path into your
+  on-prem network at all.
+- **Encrypted at rest** — the on-prem copy holds your DB and secrets; treat it
   as sensitively as the server.
-- **Pull, not push** — the server can't reach into your network; only the on-prem
-  box initiates.
+- **Pinned host key** — both the push and pull legs use a pinned
+  `known_hosts`/`UserKnownHostsFile`, not TOFU, since these run unattended.
+
+## If you're migrating from the old direct-to-server pull
+If this box used to pull straight from the ResourceSpace server (the
+`rsbackup` account installed by `scripts/setup-onprem-pull.sh`), that script
+and account are now legacy — see storagebox-setup.md step 11 to decommission
+them once the Storage Box path has run cleanly for a few nights.

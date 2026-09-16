@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# LEGACY: this script grants an on-prem box direct pull access to THIS
+# server. The current design instead pushes to a Storage Box and has the
+# on-prem box pull from there — see docs/storagebox-setup.md and
+# docs/onprem-pull-setup.md. Keep this only if you deliberately want a
+# direct-pull path in addition to (or instead of) the Storage Box hop; if
+# you're migrating to the Storage Box design, don't run this — and if you
+# already have, see storagebox-setup.md step 11 to tear it back down.
+#
 # Run on the ResourceSpace SERVER (as root) when the off-site/on-prem box is
 # ready. Grants that box READ-ONLY, command-locked, source-pinned rsync access
 # to the staged backups — no shell, no sudo, no write. Idempotent.

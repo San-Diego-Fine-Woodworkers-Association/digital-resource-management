@@ -26,6 +26,16 @@ FILESTORE_SRC="${FILESTORE_SRC:-/data/filestore}"
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
 SECRETS_AGE_RECIPIENT="${BACKUP_SECRETS_AGE_RECIPIENT:-}"
 
+# Off-site push target (Hetzner Storage Box or any rsync-over-SSH host). Unset
+# by default so a deployment that hasn't configured this yet still stages
+# locally exactly as before. See docs/storagebox-setup.md.
+STORAGE_BOX_HOST="${STORAGE_BOX_HOST:-}"
+STORAGE_BOX_USER="${STORAGE_BOX_USER:-}"
+STORAGE_BOX_PORT="${STORAGE_BOX_PORT:-23}"
+STORAGE_BOX_REMOTE_PATH="${STORAGE_BOX_REMOTE_PATH:-./resourcespace/}"
+STORAGE_BOX_KEY="/root/.ssh/storagebox_ed25519"
+STORAGE_BOX_KNOWN_HOSTS="/root/.ssh/storagebox_known_hosts"
+
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 log() { printf '%s [backup] %s\n' "$(date -u +%FT%TZ)" "$*"; }
 fail() { printf '%s [backup] ERROR: %s\n' "$(date -u +%FT%TZ)" "$*" >&2; exit 1; }
@@ -166,5 +176,33 @@ find "$BACKUP_DIR/secrets" -maxdepth 1 -type f -name 'secrets-*.env.age' -mtime 
   echo "total size      : $(du -sh "$BACKUP_DIR" 2>/dev/null | cut -f1)"
 } > "$BACKUP_DIR/manifest.txt"
 
+# ---------------- 6. Off-site push (optional) ----------------
+# Pushes the staged tree to a Storage Box (or similar) over rsync/SSH. This is
+# copy 2 of the 3-2-1 scheme; the on-prem box then PULLS from the Storage Box
+# (never from this server) — see docs/onprem-pull-setup.md.
+if [ -n "$STORAGE_BOX_HOST" ]; then
+  [ -n "$STORAGE_BOX_USER" ] || fail "STORAGE_BOX_HOST is set but STORAGE_BOX_USER is not"
+  [ -s "$STORAGE_BOX_KEY" ] || fail "STORAGE_BOX_HOST is set but no push key was materialized (is STORAGE_BOX_SSH_KEY_B64 set and valid base64?)"
+  # Pin the host key explicitly rather than TOFU-accepting it on first push —
+  # this credential runs unattended, so silently trusting a spoofed host on a
+  # network blip is exactly the failure mode we don't want.
+  [ -f "$STORAGE_BOX_KNOWN_HOSTS" ] || fail "STORAGE_BOX_HOST is set but STORAGE_BOX_HOST_KEY was not — refusing to push without a pinned host key. See docs/storagebox-setup.md."
+
+  log "Pushing to Storage Box ${STORAGE_BOX_USER}@${STORAGE_BOX_HOST}:${STORAGE_BOX_REMOTE_PATH} ..."
+  if rsync -az --delete --numeric-ids \
+      --exclude '.lock' \
+      -e "ssh -i $STORAGE_BOX_KEY -p $STORAGE_BOX_PORT -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$STORAGE_BOX_KNOWN_HOSTS -o BatchMode=yes" \
+      "$BACKUP_DIR"/ "${STORAGE_BOX_USER}@${STORAGE_BOX_HOST}:${STORAGE_BOX_REMOTE_PATH}"; then
+    log "Storage Box push OK."
+  else
+    fail "Storage Box push failed — local staging succeeded but the off-site copy is now stale. Not stamping .backup-ok."
+  fi
+else
+  log "STORAGE_BOX_HOST not set — staging locally only, no off-site push this run."
+fi
+
+# .backup-ok reflects the FULL chain (local stage + off-site push, when
+# configured) so BACKUP_MAX_AGE_HOURS/healthcheck.sh can't report healthy
+# while the off-site copy is silently falling behind.
 date -u +%FT%TZ > "$BACKUP_DIR/.backup-ok"
 log "Backup complete."

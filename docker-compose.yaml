@@ -101,6 +101,20 @@ services:
       # Optional: an age public key. If set, an encrypted secrets snapshot is
       # included in each backup so it is self-contained. Leave blank to skip.
       - BACKUP_SECRETS_AGE_RECIPIENT=${BACKUP_SECRETS_AGE_RECIPIENT:-}
+      # Optional off-site push (copy 2) to a Storage Box or similar rsync/SSH
+      # target. Leave STORAGE_BOX_HOST blank to stage locally only, as before.
+      # See docs/storagebox-setup.md.
+      - STORAGE_BOX_HOST=${STORAGE_BOX_HOST:-}
+      - STORAGE_BOX_USER=${STORAGE_BOX_USER:-}
+      - STORAGE_BOX_PORT=${STORAGE_BOX_PORT:-23}
+      - STORAGE_BOX_REMOTE_PATH=${STORAGE_BOX_REMOTE_PATH:-./resourcespace/}
+      # Secrets — a private key (RW sub-account) and its pinned host key line,
+      # written to disk by entrypoint.sh at container start. Never in git.
+      # The private key is BASE64-ENCODED (see docs/storagebox-setup.md) since
+      # Dokploy's Environment tab, like a .env file, parses one KEY=VALUE per
+      # line — a raw multi-line PEM block would get corrupted.
+      - STORAGE_BOX_SSH_KEY_B64=${STORAGE_BOX_SSH_KEY_B64:-}
+      - STORAGE_BOX_HOST_KEY=${STORAGE_BOX_HOST_KEY:-}
       # DB connection (root, for a full dump) + secrets for the optional snapshot.
       - MYSQL_SERVER=${MYSQL_SERVER}
       - MYSQL_ROOT_USER=${MYSQL_ROOT_USER}

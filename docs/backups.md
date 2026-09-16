@@ -3,9 +3,12 @@
 How the ResourceSpace stack is backed up, what's covered, and how to operate it.
 
 The design follows the **3-2-1 rule**: the server stages backups locally (copy 1),
-an off-site box pulls them (copy 2, different location), and you keep dated
-snapshots there (history). The transfer is **pull-based** — the off-site box
-reaches in; the server never holds credentials into your network.
+a Hetzner Storage Box holds an off-site copy the sidecar pushes to (copy 2),
+and an on-prem box pulls from *that* Storage Box into dated snapshots (copy 3,
+history). The on-prem leg is **pull-based** — it reaches into the Storage Box,
+never into the server, and its credential there is read-only. See
+[storagebox-setup.md](./storagebox-setup.md) and
+[onprem-pull-setup.md](./onprem-pull-setup.md) for the full setup.
 
 ```
 ┌─────────────────────────── ResourceSpace server ───────────────────────────┐
@@ -13,10 +16,18 @@ reaches in; the server never holds credentials into your network.
 │  rs_assets ─(ro mirror)────┼──►  backup sidecar  ──►  `backups` volume       │
 │  Dokploy env (secrets) ────┘        (nightly)          /backups/…           │
 └───────────────────────────────────────────────────────────────┬───────────┘
-                                                                  │ rsync/SSH (pull)
+                                                                  │ rsync/SSH PUSH
+                                                                  │ (RW sub-account)
+                                                        ┌─────────▼──────────┐
+                                                        │   Hetzner Storage   │
+                                                        │   Box (copy 2)      │
+                                                        └─────────┬──────────┘
+                                                                  │ rsync/SSH PULL
+                                                                  │ (RO sub-account)
                                                         ┌─────────▼──────────┐
                                                         │  off-site / on-prem │
                                                         │  mirror + snapshots │
+                                                        │       (copy 3)      │
                                                         └─────────────────────┘
 ```
 
@@ -76,9 +87,21 @@ it can never modify your assets.
 | `BACKUP_ON_START` | `false` | Run one backup immediately on container start (useful to verify a deploy) |
 | `BACKUP_SECRETS_AGE_RECIPIENT` | *(unset)* | age public key; if set, include an encrypted secrets snapshot |
 | `BACKUP_MAX_AGE_HOURS` | `26` | Healthcheck: mark unhealthy if the last success is older than this |
+| `STORAGE_BOX_HOST` | *(unset)* | Storage Box hostname (`u123456.your-storagebox.de`); unset = stage locally only, no off-site push |
+| `STORAGE_BOX_USER` | *(unset)* | The **RW** sub-account username |
+| `STORAGE_BOX_PORT` | `23` | Storage Box rsync/SSH port (always 23, not 22) |
+| `STORAGE_BOX_REMOTE_PATH` | `./resourcespace/` | Path on the Storage Box, relative to the RW sub-account's root |
+| `STORAGE_BOX_SSH_KEY_B64` | *(unset)* | **Base64-encoded** private key (RW sub-account) — decoded to disk in the container at start. Base64, not raw, because Dokploy's Environment tab parses one `KEY=VALUE` per line like a `.env` file and would corrupt a raw multi-line PEM block |
+| `STORAGE_BOX_HOST_KEY` | *(unset)* | Pinned host key line (from `ssh-keyscan`); push refuses to run without this once `STORAGE_BOX_HOST` is set |
 
 The DB/secret env vars (`MYSQL_*`, `SCRAMBLE_KEY`, …) are passed through from the
-same Dokploy environment the other services use.
+same Dokploy environment the other services use. See
+[storagebox-setup.md](./storagebox-setup.md) for how to generate and wire in
+the `STORAGE_BOX_*` values.
+
+> `.backup-ok` (and therefore the healthcheck / `BACKUP_MAX_AGE_HOURS`) is only
+> stamped once the off-site push succeeds, when `STORAGE_BOX_HOST` is set — a
+> stalled push shows up the same way a stalled local dump would.
 
 > Filestore is kept as a single **live mirror** on the server (not dated) to
 > keep server disk use flat; point-in-time history lives on the off-site box as
@@ -110,6 +133,10 @@ A backup you haven't restored isn't a backup. See [restore.md](./restore.md) and
 do a **quarterly test restore** onto a throwaway box.
 
 ## Off-site copy
-The off-site/on-prem pull is the second half of this story. When that box is
-ready, follow [onprem-pull-setup.md](./onprem-pull-setup.md) — it sets up a
-read-only, command-locked, source-pinned rsync account and the pull job.
+Two hops complete the 3-2-1 scheme:
+1. **[storagebox-setup.md](./storagebox-setup.md)** — provision a Hetzner
+   Storage Box, its RW (push) and RO (pull) sub-accounts, and turn on Storage
+   Box Snapshots as the backstop against a compromised push credential.
+2. **[onprem-pull-setup.md](./onprem-pull-setup.md)** — point your on-prem box
+   at the Storage Box's RO sub-account to pull down dated, encrypted-at-rest
+   snapshots.
