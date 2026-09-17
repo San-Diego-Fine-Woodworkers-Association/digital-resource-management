@@ -4,28 +4,32 @@
 # server's nightly backup window. See docs/onprem-pull-setup.md.
 #
 # Usage:
-#   SERVER=rsbackup@5.78.204.140 SSH_KEY=~/.ssh/rs_backup \
-#   DEST=/srv/backups/resourcespace bash scripts/onprem-pull.sh
+#   SERVER=<pull-user>@<box-host> SSH_KEY=~/.ssh/storagebox_pull SSH_PORT=23 \
+#   REMOTE_PATH=resourcespace DEST=/srv/backups/resourcespace bash scripts/onprem-pull.sh
 set -euo pipefail
 
-SERVER="${SERVER:?set SERVER=user@host, e.g. rsbackup@<server-ip>}"
+SERVER="${SERVER:?set SERVER=user@host, e.g. <pull-user>@<box-host>}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/rs_backup}"
 DEST="${DEST:-/srv/backups/resourcespace}"   # put this on an ENCRYPTED (LUKS) volume
 SSH_PORT="${SSH_PORT:-22}"
 SNAP_RETENTION="${SNAP_RETENTION:-30}"        # number of dated snapshots to keep
+# Path on the remote, relative to the account's own home — NOT absolute. A
+# real (non-forced-command) account's "/" is the actual filesystem root,
+# which the account typically can't even list (traverse-only); the actual
+# staged backups live under a subdirectory of its home, e.g. "resourcespace"
+# for the Storage Box setup in docs/storagebox-setup.md.
+REMOTE_PATH="${REMOTE_PATH:-.}"
 
 log(){ printf '%s [onprem-pull] %s\n' "$(date -u +%FT%TZ)" "$*"; }
 
 mkdir -p "$DEST/mirror" "$DEST/snapshots"
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 
-log "pulling from $SERVER -> $DEST/mirror ..."
-# The remote key is command-locked to `rrsync -ro <root>`, so the remote path is
-# relative to that root: ':' (or ':/') means the whole staged backup tree.
+log "pulling from $SERVER:$REMOTE_PATH -> $DEST/mirror ..."
 # --delete keeps the mirror faithful; the dated snapshot below preserves history.
 rsync -az --delete --numeric-ids --stats \
   -e "ssh -i $SSH_KEY -p $SSH_PORT -o BatchMode=yes -o StrictHostKeyChecking=accept-new" \
-  "$SERVER":/ "$DEST/mirror/"
+  "$SERVER":"${REMOTE_PATH%/}/" "$DEST/mirror/"
 
 # Space-efficient dated snapshot: unchanged files are hardlinked, so N snapshots
 # cost ~one copy plus the deltas. (Requires mirror + snapshots on one filesystem.)

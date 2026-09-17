@@ -44,16 +44,24 @@ per your threat model.)
 
 ## Step 2 — Schedule the pull (on-prem)
 
-Use `scripts/onprem-pull.sh` from this repo, unchanged — only what `SERVER`
-points at has changed (the Storage Box's RO sub-account, not the
-ResourceSpace server). Run it a bit **after** the server's backup *and* push
-window (default backup at 02:00 PT; push follows immediately after, so 03:30
-is comfortable).
+Use `scripts/onprem-pull.sh` from this repo — what `SERVER` points at has
+changed (the Storage Box's RO sub-account, not the ResourceSpace server), and
+it now needs `REMOTE_PATH` set explicitly. Run it a bit **after** the
+server's backup *and* push window (default backup at 02:00 PT; push follows
+immediately after, so 03:30 is comfortable).
+
+**`REMOTE_PATH` matters and is easy to get wrong.** A real Hetzner account
+(unlike the old server-side `rrsync`-forced setup) has no remapping of the
+path you request — `user@host:/` means the actual filesystem root, which the
+account can traverse into subdirectories of but typically can't *list*
+directly (confirmed by testing: `opendir "/." failed: Permission denied`).
+The real staged backups live in a subdirectory of the account's own home —
+`resourcespace` in this setup — so `REMOTE_PATH` must point there, not at `/`.
 
 ```bash
 # test once by hand:
 SERVER=<pull-user>@<box-host> SSH_KEY=~/.ssh/storagebox_pull SSH_PORT=23 \
-DEST=/srv/backups/resourcespace bash scripts/onprem-pull.sh
+REMOTE_PATH=resourcespace DEST=/srv/backups/resourcespace bash scripts/onprem-pull.sh
 ```
 
 Then a systemd timer:
@@ -69,6 +77,7 @@ Type=oneshot
 Environment=SERVER=<pull-user>@<box-host>
 Environment=SSH_KEY=/root/.ssh/storagebox_pull
 Environment=SSH_PORT=23
+Environment=REMOTE_PATH=resourcespace
 Environment=DEST=/srv/backups/resourcespace
 Environment=SNAP_RETENTION=30
 ExecStart=/opt/digital-resource-management/scripts/onprem-pull.sh
