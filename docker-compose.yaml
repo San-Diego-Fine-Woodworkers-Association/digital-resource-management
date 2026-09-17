@@ -150,8 +150,28 @@ networks:
     external: true
 
 volumes:
+  # mariadb/rs_assets/backups are bind-mounted onto the attached Hetzner
+  # Volume (mounted at DATA_VOLUME_PATH on the host) instead of living under
+  # Docker's default /var/lib/docker on the root disk — those are the three
+  # that actually grow over time. clip_cache/faces_models are small model
+  # caches and stay on the root disk as ordinary named volumes.
   mariadb:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_VOLUME_PATH:-/mnt/HC_Volume_105523521}/mariadb
   rs_assets:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_VOLUME_PATH:-/mnt/HC_Volume_105523521}/filestore
   clip_cache:
   faces_models:
   backups:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_VOLUME_PATH:-/mnt/HC_Volume_105523521}/backups
