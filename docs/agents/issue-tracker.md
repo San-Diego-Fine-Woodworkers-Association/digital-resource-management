@@ -51,3 +51,9 @@ Every issue in this repo belongs on the org Project **Digital Resource Managemen
 - The **Status** field drives the Kanban columns (Triage, Ready, In progress, In review, Done). Labels do not move cards on their own.
 - The **triage labels** (see `triage-labels.md`) carry triage state. A Project workflow keyed on those labels sets Status.
 - New issues are added by the Project's "Auto-add to project" workflow. If an issue is missing from the board: `gh project item-add 2 --owner San-Diego-Fine-Woodworkers-Association --url <issue-url>`.
+
+### Epics and swimlanes
+
+A wayfinder **map** is this repo's epic: its tickets are sub-issues, so the board's **Parent issue** field groups them. Set the Board view to group/slice by **Parent issue** for one swimlane per map, with Status as the columns. Nothing extra to maintain.
+
+**Milestones are optional.** Only when a map has a target date, create a milestone named after the map and assign the map and all its child tickets to it. Otherwise leave milestones unset.
