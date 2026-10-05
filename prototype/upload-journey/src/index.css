@@ -1,0 +1,4 @@
+@import "@sdwa/tokens/theme.css";
+/* Tailwind does not scan node_modules; same line apps/auth uses. */
+@source "../node_modules/@sdwa/components/dist/**/*.{js,cjs}";
+html { font-size: 18px; } /* bigger base text for the audience */
