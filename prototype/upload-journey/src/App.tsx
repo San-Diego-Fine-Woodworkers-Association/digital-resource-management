@@ -17,7 +17,7 @@ const VARIANTS = [
 function param(name: string) { return new URLSearchParams(location.search).get(name); }
 
 export function App() {
-  const [variant, setVariant] = useState(param("variant") ?? "A");
+  const [variant, setVariant] = useState(param("variant") ?? "B");
   const [flaky, setFlaky] = useState(false);
   const screen = param("screen");
   const idx = Math.max(0, VARIANTS.findIndex((v) => v.key === variant));

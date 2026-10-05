@@ -71,9 +71,9 @@ export function Req() {
 }
 
 export function MetaFields({
-  value, onChange, override = false, showPermission = true,
-}: { value: Partial<Meta>; onChange: (p: Partial<Meta>) => void; override?: boolean; showPermission?: boolean }) {
-  const same = override ? "Same as the others" : "Choose…";
+  value, onChange, override = false, prefilled = false, showPermission = true,
+}: { value: Partial<Meta>; onChange: (p: Partial<Meta>) => void; override?: boolean; prefilled?: boolean; showPermission?: boolean }) {
+  const same = override && !prefilled ? "Same as the others" : "Choose…";
   const req = !override;
   const text = (k: "description" | "people", label: string, hint?: string, required = false) => (
     <FieldGroup
@@ -81,7 +81,7 @@ export function MetaFields({
       isRequired={required && req}
       value={(value[k] as string) ?? ""}
       onChange={(v) => onChange({ [k]: v })}
-      inputProps={{ placeholder: override ? "Same as the others" : hint, className: "min-h-12 text-base" }}
+      inputProps={{ placeholder: override && !prefilled ? "Same as the others" : hint, className: "min-h-12 text-base" }}
     />
   );
   return (
@@ -141,4 +141,14 @@ export function Done({ photos, videos, onMore }: { photos: number; videos: numbe
       <BigButton variant="secondary" onPress={onMore}>Share more photos or videos</BigButton>
     </div>
   );
+}
+
+// Full-size view of an Item (photo, or a playable video) for the pop-up viewer.
+export function FullMedia({ item }: { item: Item }) {
+  const [broken, setBroken] = useState(false);
+  if (item.kind === "video")
+    return <video src={item.url} controls playsInline className="max-h-[65vh] w-full rounded bg-black" />;
+  if (broken)
+    return <p className="rounded bg-secondary p-8 text-center text-muted-foreground">This photo can't be previewed here, but it will still be sent.</p>;
+  return <img src={item.url} alt={item.file.name} onError={() => setBroken(true)} className="max-h-[65vh] w-full rounded bg-secondary object-contain" />;
 }
