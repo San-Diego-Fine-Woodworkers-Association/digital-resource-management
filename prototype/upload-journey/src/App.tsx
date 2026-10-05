@@ -47,7 +47,7 @@ export function App() {
           {variant === "C" && <VariantC flaky={flaky} />}
         </div>
       )}
-      <div className="fixed bottom-24 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black px-3 py-2 text-sm text-white shadow-lg">
+      <div className="fixed left-1/2 top-2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black px-3 py-2 text-sm text-white shadow-lg">
         <button aria-label="Previous variant" className="px-2 text-lg" onClick={() => go(idx - 1)}>←</button>
         <span className="whitespace-nowrap">{VARIANTS[idx].key} ({VARIANTS[idx].name})</span>
         <button aria-label="Next variant" className="px-2 text-lg" onClick={() => go(idx + 1)}>→</button>

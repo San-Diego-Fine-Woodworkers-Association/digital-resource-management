@@ -64,13 +64,21 @@ export function StatusText({ item }: { item: Item }) {
 const selectCls =
   "min-h-12 rounded-md border border-input bg-background px-3 py-2 text-base outline-none focus:ring-2 focus:ring-ring";
 
+// The design system has no required indicator (isRequired only sets ARIA/data-required),
+// so the star is drawn here. Finding for the DS: Label should render this.
+export function Req() {
+  return <span aria-hidden className="text-destructive"> *</span>;
+}
+
 export function MetaFields({
   value, onChange, override = false, showPermission = true,
 }: { value: Partial<Meta>; onChange: (p: Partial<Meta>) => void; override?: boolean; showPermission?: boolean }) {
   const same = override ? "Same as the others" : "Choose…";
-  const text = (k: "description" | "people", label: string, hint?: string) => (
+  const req = !override;
+  const text = (k: "description" | "people", label: string, hint?: string, required = false) => (
     <FieldGroup
-      label={label}
+      label={<>{label}{required && req && <Req />}</>}
+      isRequired={required && req}
       value={(value[k] as string) ?? ""}
       onChange={(v) => onChange({ [k]: v })}
       inputProps={{ placeholder: override ? "Same as the others" : hint, className: "min-h-12 text-base" }}
@@ -78,10 +86,11 @@ export function MetaFields({
   );
   return (
     <div className="flex flex-col gap-4">
-      {text("description", "What are these?", "For example: Dovetail class, May 3")}
+      {req && <p className="text-sm text-muted-foreground"><span className="text-destructive">*</span> means you need to fill this in</p>}
+      {text("description", "What are these?", "For example: Dovetail class, May 3", true)}
       <label className="flex flex-col gap-1">
-        <span className="text-sm font-medium">Where were they taken?</span>
-        <select className={selectCls} value={value.event ?? ""} onChange={(e) => onChange({ event: e.target.value })}>
+        <span className="text-sm font-medium">Where were they taken?{req && <Req />}</span>
+        <select required={req} aria-required={req} className={selectCls} value={value.event ?? ""} onChange={(e) => onChange({ event: e.target.value })}>
           <option value="">{same}</option>
           {EVENTS.map((e) => <option key={e}>{e}</option>)}
         </select>
@@ -96,9 +105,9 @@ export function MetaFields({
       {text("people", "Who is in them? (optional)", "Names, separated by commas")}
       {showPermission && (
         <label className="flex items-start gap-3 text-base">
-          <input type="checkbox" className="mt-1 size-6 shrink-0 accent-[var(--primary)]" checked={!!value.permission}
+          <input type="checkbox" required aria-required className="mt-1 size-6 shrink-0 accent-[var(--primary)]" checked={!!value.permission}
             onChange={(e) => onChange({ permission: e.target.checked })} />
-          <span>I took these, or I have permission to share them with SDFWA</span>
+          <span>I took these, or I have permission to share them with SDFWA<Req /></span>
         </label>
       )}
     </div>
@@ -107,7 +116,7 @@ export function MetaFields({
 
 export function Page({ children }: { children: ReactNode }) {
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-xl flex-col gap-6 px-4 pb-32 pt-6">
+    <div className="mx-auto flex min-h-screen w-full max-w-xl flex-col gap-6 px-4 pb-60 pt-6">
       <header className="flex flex-col gap-1 border-b border-border pb-4">
         <p className="text-sm text-muted-foreground">SDFWA Media</p>
         <h1 className="text-2xl font-bold">Share your photos and videos</h1>
