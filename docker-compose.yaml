@@ -39,6 +39,14 @@ services:
   clip:
     build: ./clip
     restart: unless-stopped
+    # Hard memory cap so a spike can only kill this container, never starve
+    # Apache/MariaDB (the 2026-10-05 upload failures, #25). Measured: ~1 GB
+    # resident when idle, ~2.2 GB peak while loading the model at startup
+    # (page cache counts toward the cap but is reclaimed before an OOM kill).
+    # The handlers block the event loop during inference, so the service
+    # already processes one image at a time and concurrent uploads queue.
+    # If CLIP is down, RS skips the vector and cron backfills it later.
+    mem_limit: 2560m
     environment:
       - CLIP_DB_HOST=mariadb
       - CLIP_DB_USER=${MYSQL_ROOT_USER}
@@ -53,6 +61,9 @@ services:
   faces:
     build: ./faces
     restart: unless-stopped
+    # Hard memory cap; see the clip service. Measured: ~1.1 GB resident when
+    # idle, ~1.6 GB peak.
+    mem_limit: 2g
     environment:
       - FACES_DB_HOST=mariadb
       - FACES_DB_USER=${MYSQL_ROOT_USER}
