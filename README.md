@@ -8,6 +8,16 @@ The official Docker image for ResourceSpace. Full build instructions can be foun
 # ResourceSpace version
 This deployment runs ResourceSpace **11.0**, pinned to SVN revision `29660` (`releases/11.0 -r 29660`) in the `Dockerfile`. The `clip` and `faces` service images export their scripts at the same revision to stay in lockstep with core — bump all three together when upgrading. After upgrading from a previous version, **back up the MariaDB database first**, then log in as admin — ResourceSpace will prompt to run the 11.0 schema upgrade.
 
+# Deployments
+**Deployments are handled by Dokploy: a merge to `main` deploys.** There is no separate release step. This is a volunteer-run, non-mission-critical service, so the simplicity is worth more than a release gate.
+
+Dokploy deploys this stack with `docker compose up -d --build --remove-orphans` (from Dokploy's source; confirm the command on the service in the Dokploy UI). In practice:
+* Compose recreates only the services whose definition or image changed. Everything else keeps running, so a merge that doesn't touch ResourceSpace doesn't restart ResourceSpace, MariaDB or Adminer.
+* **ResourceSpace restarts only when its own inputs change**: the `Dockerfile`, `config.php`, `entrypoint.sh`, `cronjob`, its block in `docker-compose.yaml`, or a Dokploy environment variable it uses. Merge those pull requests at a quiet time.
+* `--remove-orphans` removes the containers of any service deleted from `docker-compose.yaml`.
+* A merge starts any new or changed service immediately. If a change needs something outside this repo (a new secret in Dokploy's Environment tab, a host directory or mounted volume), set that up **before** merging.
+* To roll back, merge a revert of the offending commit; the merge redeploys.
+
 # Backups & recovery
 A `backup` sidecar (see `backup/` and the `backup` service in `docker-compose.yaml`) stages nightly, consistent backups onto a `backups` volume: a `--single-transaction` MariaDB dump, an incremental mirror of the `rs_assets` filestore, and — optionally — an age-encrypted snapshot of the deployment secrets. The sidecar then **pushes** that to a Hetzner Storage Box (copy 2), and an off-site/on-prem box **pulls** from the Storage Box over a read-only rsync/SSH sub-account, keeping dated snapshots (copy 3, 3-2-1). The `clip_cache`/`faces_models` volumes are intentionally skipped (regenerable).
 
