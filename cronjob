@@ -1,2 +1,8 @@
-#!/bin/sh
+#!/bin/bash
+# cron starts jobs with a near-empty environment, but config.php reads the DB
+# credentials and other settings from the container's env vars via getenv().
+# Import them from PID 1 (the entrypoint, which Docker started with the full
+# env); `su` without -l passes them through to www-data.
+while IFS= read -r -d '' kv; do export "$kv"; done < /proc/1/environ
+
 su -s /bin/sh -c 'cd /var/www/html/pages/tools && nice -n 19 ionice -c2 -n7 php cron_copy_hitcount.php' www-data
