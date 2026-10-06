@@ -17,6 +17,9 @@ Dokploy deploys via Docker compose. In practice:
 * A merge starts any new or changed service immediately. If a change needs something outside this repo (a new secret in Dokploy's Environment tab, a host directory or mounted volume), set that up **before** merging.
 * To roll back, merge a revert of the offending commit; the merge redeploys.
 
+# ResourceSpace setup (fields, groups, users)
+The fields, user groups, user and dash tile that the Member Media Upload flow needs live in the database. `scripts/rs-setup.sh provision` recreates them on any host, and `scripts/rs-setup.sh verify` runs a live permission test against them. See **[docs/resourcespace-setup.md](docs/resourcespace-setup.md)**.
+
 # Backups & recovery
 A `backup` sidecar (see `backup/` and the `backup` service in `docker-compose.yaml`) stages nightly, consistent backups onto a `backups` volume: a `--single-transaction` MariaDB dump, an incremental mirror of the `rs_assets` filestore, and — optionally — an age-encrypted snapshot of the deployment secrets. The sidecar then **pushes** that to a Hetzner Storage Box (copy 2), and an off-site/on-prem box **pulls** from the Storage Box over a read-only rsync/SSH sub-account, keeping dated snapshots (copy 3, 3-2-1). The `clip_cache`/`faces_models` volumes are intentionally skipped (regenerable).
 
