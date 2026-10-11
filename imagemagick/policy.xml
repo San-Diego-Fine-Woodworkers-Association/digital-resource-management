@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policymap [
+  <!ELEMENT policymap (policy)*>
+  <!ATTLIST policymap xmlns CDATA #FIXED ''>
+  <!ELEMENT policy EMPTY>
+  <!ATTLIST policy xmlns CDATA #FIXED '' domain NMTOKEN #REQUIRED
+    name NMTOKEN #IMPLIED pattern CDATA #IMPLIED rights NMTOKEN #IMPLIED
+    stealth NMTOKEN #IMPLIED value CDATA #IMPLIED>
+]>
+<!--
+  SDFWA ImageMagick policy for the ResourceSpace image (#37).
+
+  Deliberately PERMISSIVE about formats (ADR 0005): staff upload the full range
+  of media formats through ResourceSpace and must not be blocked, so this is a
+  short deny-list of high-risk coders and path patterns plus generous resource
+  caps, NOT a format allowlist. The member upload path is narrowed separately
+  by the upload proxy's content-based allowlist.
+
+  The Dockerfile installs this over /etc/ImageMagick-6/policy.xml (Ubuntu 24.04
+  ships ImageMagick 6.9.12). Check it with: identify -list policy
+
+  Matching rules are applied in order and the last match wins. Only add
+  rights="none" rules here; never add a broad "*" deny without re-testing
+  every format staff upload.
+-->
+<policymap>
+  <!-- Resource caps: generous, sized for large photos, scans and panoramas.
+       Exceeding width, height, disk or time is an error; exceeding memory,
+       map or area only spills the pixel cache to the next tier (map, then
+       disk). -->
+  <policy domain="resource" name="width" value="64KP"/>
+  <policy domain="resource" name="height" value="64KP"/>
+  <policy domain="resource" name="area" value="1GP"/>
+  <policy domain="resource" name="memory" value="2GiB"/>
+  <policy domain="resource" name="map" value="4GiB"/>
+  <policy domain="resource" name="disk" value="8GiB"/>
+  <policy domain="resource" name="time" value="600"/>
+
+  <!-- Scripting and vector-drawing languages that can read and write
+       arbitrary files (the ImageTragick family, CVE-2016-3714). -->
+  <policy domain="coder" rights="none" pattern="{MVG,MSL}"/>
+
+  <!-- Network and pseudo-file fetchers: no outbound requests, no local reads
+       by URL, no read-then-delete pseudo files. -->
+  <policy domain="coder" rights="none" pattern="{URL,HTTP,HTTPS,FTP,FILE,EPHEMERAL}"/>
+  <policy domain="delegate" rights="none" pattern="{URL,HTTP,HTTPS,FTP}"/>
+
+  <!-- Indirect reads: "@file" pulls a filename or text from another file
+       (for example text:@/etc/passwd or label:@...). -->
+  <policy domain="path" rights="none" pattern="@*"/>
+  <!-- A filename starting with "|" is run as a shell pipe. -->
+  <policy domain="path" rights="none" pattern="|*"/>
+</policymap>
