@@ -31,7 +31,13 @@ type Env = Record<string, string | undefined>;
 
 const DEFAULT_WEB_ROOT = path.resolve(import.meta.dirname, "..", "dist", "web");
 
+/** A base URL: validated, with any trailing slash removed so paths can be appended. */
 function httpUrl(env: Env, key: string, fallback: string): string {
+  return httpLink(env, key, fallback).replace(/\/+$/, "");
+}
+
+/** A page link: validated, otherwise kept exactly as given. */
+function httpLink(env: Env, key: string, fallback: string): string {
   const raw = (env[key] ?? "").trim() || fallback;
   let url: URL;
   try {
@@ -42,7 +48,7 @@ function httpUrl(env: Env, key: string, fallback: string): string {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error(`${key} must be an http(s) URL, got ${JSON.stringify(raw)}`);
   }
-  return url.toString().replace(/\/+$/, "");
+  return url.toString();
 }
 
 function int(env: Env, key: string, fallback: number, min: number, max: number): number {
@@ -69,7 +75,7 @@ export function loadConfig(env: Env): Config {
     authBaseUrl: httpUrl(env, "AUTH_BASE_URL", "https://auth.sdfwa.org"),
     rsBaseUrl: httpUrl(env, "RS_BASE_URL", "http://resourcespace"),
     rsHostHeader: (env.RS_HOST_HEADER ?? "").trim() || new URL(publicBaseUrl).host,
-    renewUrl: httpUrl(env, "RENEW_URL", "https://www.sdfwa.org/membership"),
+    renewUrl: httpLink(env, "RENEW_URL", "https://sdfwa.org/sdfwa-membership-levels/"),
     uploadsPaused: killSwitch(env.UPLOADS_PAUSED),
     stagingDir: (env.STAGING_DIR ?? "").trim() || "/staging",
     stagingCapPercent: int(env, "STAGING_CAP_PERCENT", 80, 0, 100),

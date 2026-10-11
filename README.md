@@ -26,7 +26,7 @@ The `upload` service serves the member upload page at `https://${DOMAIN_NAME}/up
 Dokploy environment for it:
 * `UPLOAD_STAGING_PATH` (**required**, no default): the host mount point of the dedicated staging volume, owned by UID/GID `10001:10001`. The whole compose deploy fails until it is set.
 * `UPLOADS_PAUSED`: the kill switch. Anything but `false`/`0`/`no`/`off` shows the paused page and refuses writes. Defaults to `false`.
-* `UPLOAD_RENEW_URL` (default `https://www.sdfwa.org/membership`) and `UPLOAD_AUTH_BASE_URL` (default `https://auth.sdfwa.org`).
+* `UPLOAD_RENEW_URL` (default `https://sdfwa.org/sdfwa-membership-levels/`) and `UPLOAD_AUTH_BASE_URL` (default `https://auth.sdfwa.org`).
 
 Develop in `upload/`: `npm ci`, then `npm run typecheck`, `npm test`, `npm run build`. The `Upload service checks` workflow runs the same on every pull request and builds the image.
 

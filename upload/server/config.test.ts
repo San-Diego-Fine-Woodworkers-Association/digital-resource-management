@@ -9,7 +9,7 @@ describe("loadConfig", () => {
     expect(c.authBaseUrl).toBe("https://auth.sdfwa.org");
     expect(c.rsBaseUrl).toBe("http://resourcespace");
     expect(c.rsHostHeader).toBe("media.sdfwa.org");
-    expect(c.renewUrl).toBe("https://www.sdfwa.org/membership");
+    expect(c.renewUrl).toBe("https://sdfwa.org/sdfwa-membership-levels/");
     expect(c.stagingDir).toBe("/staging");
     expect(c.stagingCapPercent).toBe(80);
     expect(c.uploadsPaused).toBe(false);

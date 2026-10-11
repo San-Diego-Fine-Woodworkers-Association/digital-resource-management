@@ -177,7 +177,7 @@ services:
       - PUBLIC_BASE_URL=https://${DOMAIN_NAME}
       - AUTH_BASE_URL=${UPLOAD_AUTH_BASE_URL:-https://auth.sdfwa.org}
       - RS_BASE_URL=http://resourcespace
-      - RENEW_URL=${UPLOAD_RENEW_URL:-https://www.sdfwa.org/membership}
+      - RENEW_URL=${UPLOAD_RENEW_URL:-https://sdfwa.org/sdfwa-membership-levels/}
       # The kill switch: anything but false/0/no/off pauses uploads.
       - UPLOADS_PAUSED=${UPLOADS_PAUSED:-false}
       - STAGING_DIR=/staging
