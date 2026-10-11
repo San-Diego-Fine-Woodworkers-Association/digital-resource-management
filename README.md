@@ -17,6 +17,24 @@ Dokploy deploys via Docker compose. In practice:
 * A merge starts any new or changed service immediately. If a change needs something outside this repo (a new secret in Dokploy's Environment tab, a host directory or mounted volume), set that up **before** merging.
 * To roll back, merge a revert of the offending commit; the merge redeploys.
 
+# Upload limits
+PHP accepts uploads up to **1 GB per file** (`upload_max_filesize = 1G`, `post_max_size = 1100M`), set by the drop-in `php/uploads.ini`, which the `Dockerfile` copies into both the Apache and CLI `conf.d` directories. Apache's `LimitRequestBody` is raised to match, because Apache 2.4.54 and later reject request bodies over 1 GiB by default, before PHP sees them. `max_execution_time` stays at 300 s. The limits were decided in #18.
+
+# Media tools: ImageMagick policy and patching cadence
+ResourceSpace runs ImageMagick, ghostscript, ffmpeg, exiftool and libheif on every upload, and its container holds the database root credentials and scramble keys. `imagemagick/policy.xml` replaces Ubuntu's default ImageMagick 6 policy (`/etc/ImageMagick-6/policy.xml`). It is deliberately **permissive about formats** ([ADR 0005](docs/adr/0005-permissive-imagemagick-policy.md)): a short deny-list (the MVG and MSL scripting coders, URL/HTTP/HTTPS/FTP/FILE/EPHEMERAL fetchers, `@file` indirect reads and `|` pipe filenames) plus generous resource caps. Check what is in force with `docker compose exec resourcespace identify -list policy`.
+
+Side effect: ImageMagick 6's built-in SVG renderer works by converting to MVG, so with MVG denied, **SVG files get no preview**. They still upload and download normally.
+
+**Patching cadence (standing maintenance item).** The member path is narrowed by the upload proxy, but past that we rely on these tools being patched. Docker's build cache keeps whatever versions the first build installed, so a merge does **not** pick up security updates on its own. Once a month, and as soon as possible after a published ImageMagick, ghostscript, ffmpeg, exiftool or libheif vulnerability:
+1. Bump `ARG PATCH_REFRESH` near the top of the `Dockerfile` to the current month (e.g. `2026-11`) and merge. That forces the apt layer to re-run, and the merge redeploys ResourceSpace with Ubuntu's current security updates.
+2. After the deploy, record the versions in the PR or the deploy notes:
+   ```
+   docker compose exec resourcespace dpkg-query -W imagemagick-6.q16 ghostscript ffmpeg libimage-exiftool-perl libheif1
+   ```
+3. Upload a JPEG, a HEIC from a phone, a PDF and an MP4 through ResourceSpace and check that each one gets a preview.
+
+Moving off Ubuntu 24.04 (to a newer LTS, or to ImageMagick 7) is a separate upgrade. Re-test `imagemagick/policy.xml` when that happens, because the policy path and the coder names may change.
+
 # ResourceSpace setup (fields, groups, users)
 The fields, user groups, user and dash tile that the Member Media Upload flow needs live in the database. `scripts/rs-setup.sh provision` recreates them on any host, and `scripts/rs-setup.sh verify` runs a live permission test against them. See **[docs/resourcespace-setup.md](docs/resourcespace-setup.md)**.
 
