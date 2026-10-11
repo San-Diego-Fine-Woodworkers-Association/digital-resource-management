@@ -1,0 +1,5 @@
+@import "@sdwa/tokens/theme.css";
+/* Tailwind does not scan node_modules; pick up the design system's classes. */
+@source "../node_modules/@sdwa/components/dist/**/*.{js,cjs}";
+/* Bigger base text for this audience (issue #31). Pinch-zoom stays enabled. */
+html { font-size: 18px; }
