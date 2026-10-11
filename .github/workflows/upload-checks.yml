@@ -1,0 +1,77 @@
+name: Upload service checks
+
+# Typecheck, test and build the image for the Member Media Upload service
+# (upload/). Any failing step fails the check. Runs on every pull request, so
+# it can be required on main (issue #52), and on pushes to main.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upload-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck-and-test:
+    name: Typecheck and test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: upload
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: upload/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+  image:
+    name: Build image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the upload image (not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: upload
+          file: upload/Dockerfile
+          push: false
+          load: true
+          tags: sdfwa-upload:ci
+
+      # The image starts as a non-root user on a read-only root filesystem with
+      # no capabilities, and answers its health endpoint. (Degraded is
+      # expected: there is no ResourceSpace here.)
+      - name: Smoke-test the image
+        run: |
+          docker run -d --name upload --read-only --cap-drop ALL \
+            --security-opt no-new-privileges:true --tmpfs /tmp \
+            -e STAGING_DIR=/tmp -e RS_BASE_URL=http://127.0.0.1:9 \
+            -p 8080:8080 sdfwa-upload:ci
+          for i in $(seq 1 20); do
+            if curl -s http://127.0.0.1:8080/upload/health -o health.json; then break; fi
+            sleep 1
+          done
+          docker logs upload
+          cat health.json
+          test "$(docker exec upload id -u)" != "0"
+          grep -q '"staging"' health.json
+          curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/upload/ | grep -q '^302$'

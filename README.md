@@ -20,6 +20,16 @@ Dokploy deploys via Docker compose. In practice:
 # ResourceSpace setup (fields, groups, users)
 The fields, user groups, user and dash tile that the Member Media Upload flow needs live in the database. `scripts/rs-setup.sh provision` recreates them on any host, and `scripts/rs-setup.sh verify` runs a live permission test against them. See **[docs/resourcespace-setup.md](docs/resourcespace-setup.md)**.
 
+# Member Media Upload service (`upload/`)
+The `upload` service serves the member upload page at `https://${DOMAIN_NAME}/upload` (Traefik routes only `/upload` and below to it; ResourceSpace keeps every other path). It checks the visitor's SDFWA sign-in with `auth.sdfwa.org`, and has a kill switch and a health endpoint at `/upload/health`. Design: [ADR 0001](docs/adr/0001-upload-proxy-with-tus-chunking.md), [ADR 0004](docs/adr/0004-isolated-staging-volume.md), issue #33.
+
+Dokploy environment for it:
+* `UPLOAD_STAGING_PATH` (**required**, no default): the host mount point of the dedicated staging volume, owned by UID/GID `10001:10001`. The whole compose deploy fails until it is set.
+* `UPLOADS_PAUSED`: the kill switch. Anything but `false`/`0`/`no`/`off` shows the paused page and refuses writes. Defaults to `false`.
+* `UPLOAD_RENEW_URL` (default `https://sdfwa.org/sdfwa-membership-levels/`) and `UPLOAD_AUTH_BASE_URL` (default `https://auth.sdfwa.org`).
+
+Develop in `upload/`: `npm ci`, then `npm run typecheck`, `npm test`, `npm run build`. The `Upload service checks` workflow runs the same on every pull request and builds the image.
+
 # Backups & recovery
 A `backup` sidecar (see `backup/` and the `backup` service in `docker-compose.yaml`) stages nightly, consistent backups onto a `backups` volume: a `--single-transaction` MariaDB dump, an incremental mirror of the `rs_assets` filestore, and — optionally — an age-encrypted snapshot of the deployment secrets. The sidecar then **pushes** that to a Hetzner Storage Box (copy 2), and an off-site/on-prem box **pulls** from the Storage Box over a read-only rsync/SSH sub-account, keeping dated snapshots (copy 3, 3-2-1). The `clip_cache`/`faces_models` volumes are intentionally skipped (regenerable).
 
