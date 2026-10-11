@@ -3,21 +3,24 @@
 import { AppLayout } from "@sdwa/components";
 import type { Boot } from "../shared/boot.ts";
 import { copy } from "./copy.ts";
-import { BigLink, Page, StepFrame } from "./ui.tsx";
+import type { Sender } from "./send.ts";
+import { SendPhoto } from "./SendPhoto.tsx";
+import { BigLink, Page } from "./ui.tsx";
 
-export function App({ boot }: { boot: Boot }) {
+/** Used only if no sender is given: every send fails, so nothing is lost silently. */
+const noSender: Sender = { send: async () => ({ ok: false, reason: "failed" }) };
+
+export function App({ boot, sender = noSender }: { boot: Boot; sender?: Sender }) {
   // Light theme only in v1 (issue #31).
-  return <AppLayout theme="light">{screenFor(boot)}</AppLayout>;
+  return <AppLayout theme="light">{screenFor(boot, sender)}</AppLayout>;
 }
 
-function screenFor(boot: Boot) {
+function screenFor(boot: Boot, sender: Sender) {
   switch (boot.screen) {
     case "app":
       return (
         <Page user={boot.user} signOutUrl={boot.signOutUrl}>
-          <StepFrame step={0}>
-            <p className="text-lg">{copy.choose.intro}</p>
-          </StepFrame>
+          <SendPhoto sender={sender} />
         </Page>
       );
     case "not-member":

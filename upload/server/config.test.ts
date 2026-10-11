@@ -13,6 +13,23 @@ describe("loadConfig", () => {
     expect(c.stagingDir).toBe("/staging");
     expect(c.stagingCapPercent).toBe(80);
     expect(c.uploadsPaused).toBe(false);
+    expect(c.rsUser).toBe("upload-service");
+    expect(c.rsPhotoResourceType).toBe(1);
+    expect(c.photoMaxBytes).toBe(50 * 1024 * 1024);
+  });
+
+  // A missing secret must not stop the service (or the compose deploy): it
+  // starts, and refuses uploads until the key is set.
+  it("starts without the ResourceSpace key, marked as not configured", () => {
+    expect(loadConfig({}).rsApiKey).toBe("");
+    expect(loadConfig({ RS_UPLOADER_API_KEY: "  " }).rsApiKey).toBe("");
+    expect(loadConfig({ RS_UPLOADER_API_KEY: "abc" }).rsApiKey).toBe("abc");
+  });
+
+  it("can send the ResourceSpace leg to the public address instead (the documented fallback)", () => {
+    const c = loadConfig({ RS_BASE_URL: "https://media.example.org", PUBLIC_BASE_URL: "https://media.example.org" });
+    expect(c.rsBaseUrl).toBe("https://media.example.org");
+    expect(c.rsHostHeader).toBe("media.example.org");
   });
 
   it("takes the ResourceSpace Host header from the public address", () => {
@@ -34,6 +51,8 @@ describe("loadConfig", () => {
     ["AUTH_BASE_URL", "ftp://auth"],
     ["STAGING_CAP_PERCENT", "120"],
     ["PORT", "abc"],
+    ["RS_PHOTO_RESOURCE_TYPE", "photo"],
+    ["PHOTO_MAX_BYTES", "-1"],
   ])("refuses a bad %s", (key, value) => {
     expect(() => loadConfig({ [key]: value })).toThrow(key);
   });

@@ -3,6 +3,9 @@
 //   /upload, /upload/...   the page, gated on the SDFWA session
 //   /upload/assets/...     the built app's scripts and styles (public)
 //   /upload/api/...        the narrow API; session re-checked on every call
+//     /files, /files/<id>  tus: the photo arrives in chunks (uploads.ts)
+//     POST /items          hand an arrived photo to ResourceSpace (items.ts)
+//     GET /session         who is signed in
 //   /upload/health         staging usage and ResourceSpace reachability
 //
 // Traefik routes only /upload here; ResourceSpace keeps everything else.
@@ -14,7 +17,10 @@ import { BOOT_ELEMENT_ID, type Boot } from "../shared/boot.ts";
 import { createAuditLog, stdoutSink, type AuditEvent, type AuditSink } from "./audit.ts";
 import type { Config } from "./config.ts";
 import { checkHealth } from "./health.ts";
+import { createItems, MAX_TITLE, type HandOffRequest } from "./items.ts";
+import { createResourceSpace } from "./resourcespace.ts";
 import { checkSession, displayName, isEntitled, type Session, type SessionUser } from "./session.ts";
+import { createUploads, FILES_PATH } from "./uploads.ts";
 
 export interface ServiceOptions {
   auditSink?: AuditSink;
@@ -54,6 +60,49 @@ const MIME: Record<string, string> = {
 
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
+/** The hand-off request is a few hundred bytes; anything much bigger is not one. */
+const MAX_JSON_BODY = 16 * 1024;
+
+class BodyError extends Error {
+  readonly status: number;
+  constructor(status: number) {
+    super(`body ${status}`);
+    this.status = status;
+  }
+}
+
+async function readJson(req: http.IncomingMessage): Promise<unknown> {
+  const type = (req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
+  // Also keeps other sites out: a cross-site form cannot send application/json.
+  if (type !== "application/json") throw new BodyError(415);
+  const declared = Number(req.headers["content-length"] ?? "0");
+  if (declared > MAX_JSON_BODY) throw new BodyError(413);
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > MAX_JSON_BODY) throw new BodyError(413);
+    chunks.push(chunk as Buffer);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new BodyError(400);
+  }
+}
+
+/** Only the three things the page may say about an Item; anything else it sends is ignored. */
+function parseHandOff(body: unknown): HandOffRequest | { error: string } {
+  if (typeof body !== "object" || body === null) return { error: "invalid" };
+  const b = body as Record<string, unknown>;
+  if (typeof b.uploadId !== "string") return { error: "invalid" };
+  const title = typeof b.title === "string" ? b.title.replace(/[\u0000-\u001f\u007f]+/g, " ").trim() : "";
+  if (!title) return { error: "title_required" };
+  if (title.length > MAX_TITLE) return { error: "title_too_long" };
+  if (b.rightsConfirmed !== true) return { error: "rights_required" };
+  return { uploadId: b.uploadId, title, rightsConfirmed: true };
+}
+
 function securityHeaders(res: http.ServerResponse) {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "same-origin");
@@ -89,6 +138,9 @@ function scriptSafeJson(value: unknown): string {
 
 export function createService(config: Config, options: ServiceOptions = {}): http.Server {
   const audit = createAuditLog(options.auditSink ?? stdoutSink);
+  const rsConfigured = config.rsApiKey !== "";
+  const uploads = createUploads(config);
+  const items = createItems(config, { uploads, rs: createResourceSpace(config) });
   const log =
     options.log ??
     ((message: string, fields: Record<string, unknown> = {}) =>
@@ -147,6 +199,9 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
     if (!isEntitled(s.user)) {
       return sendPage(res, 403, { screen: "not-member", user, renewUrl: config.renewUrl, signOutUrl });
     }
+    // Without its ResourceSpace key the service cannot take anything: say so
+    // plainly rather than let a member pick photos that cannot be sent.
+    if (!rsConfigured) return sendPage(res, 503, { screen: "unavailable" }, { "Retry-After": "300" });
     return sendPage(res, 200, { screen: "app", user, signOutUrl });
   }
 
@@ -158,24 +213,28 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
     // Nothing here reads the request body: every refusal is decided from the
     // headers alone. When a write is refused, the connection is closed rather
     // than draining a body we will never use.
+    const record = (outcome: string, user?: SessionUser, extra: Partial<AuditEvent> = {}) => {
+      const forwarded = req.headers["x-forwarded-for"];
+      audit.record({
+        event: "upload_request",
+        outcome,
+        method,
+        path: url.pathname,
+        user,
+        ip: (typeof forwarded === "string" ? forwarded.slice(0, 200) : undefined) ?? req.socket.remoteAddress,
+        ...extra,
+      });
+    };
     const answer = (
       status: number,
       body: unknown,
       outcome: string,
       user?: SessionUser,
       headers: Record<string, string> = {},
+      extra: Partial<AuditEvent> = {},
     ) => {
       if (isWrite) {
-        const forwarded = req.headers["x-forwarded-for"];
-        const event: AuditEvent = {
-          event: "upload_request",
-          outcome,
-          method,
-          path: url.pathname,
-          user,
-          ip: (typeof forwarded === "string" ? forwarded.slice(0, 200) : undefined) ?? req.socket.remoteAddress,
-        };
-        audit.record(event);
+        record(outcome, user, extra);
         if (status >= 400) headers = { ...headers, Connection: "close" };
       }
       sendJson(res, status, body, headers);
@@ -198,7 +257,73 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
     if (route === "/session" && (method === "GET" || method === "HEAD")) {
       return answer(200, { user: await shellUser(req, s.user) }, "ok", s.user);
     }
+
+    const isFiles = url.pathname === FILES_PATH || url.pathname.startsWith(`${FILES_PATH}/`);
+    const isItems = route === "/items";
+    if ((isFiles || isItems) && !rsConfigured) {
+      log("refusing uploads: RS_UPLOADER_API_KEY is not set");
+      return answer(503, { error: "unavailable" }, "not_configured", s.user, { "Retry-After": "300" });
+    }
+    if (isFiles) {
+      const { createdId } = await uploads.handle(req, res, s.user);
+      // One audit line when an upload starts, not one per chunk.
+      if (method === "POST") {
+        record(createdId ? "created" : `refused_${res.statusCode}`, s.user, { uploadId: createdId });
+      }
+      return;
+    }
+    if (isItems && method === "POST") return handOff(req, s.user, answer);
     return answer(404, { error: "not_found" }, "not_found", s.user);
+  }
+
+  type Answer = (
+    status: number,
+    body: unknown,
+    outcome: string,
+    user?: SessionUser,
+    headers?: Record<string, string>,
+    extra?: Partial<AuditEvent>,
+  ) => void;
+
+  async function handOff(req: http.IncomingMessage, user: SessionUser, answer: Answer) {
+    let body: unknown;
+    try {
+      body = await readJson(req);
+    } catch (err) {
+      const status = err instanceof BodyError ? err.status : 400;
+      return answer(status, { error: "invalid" }, "invalid", user);
+    }
+    const parsed = parseHandOff(body);
+    if ("error" in parsed) return answer(parsed.error === "invalid" ? 400 : 422, { error: parsed.error }, parsed.error, user);
+
+    const name = await displayName(req.headers.cookie ?? "", user, authOpts);
+    const result = await items.handOff(parsed, { user, name });
+    const uploadId = parsed.uploadId.slice(0, 64);
+    switch (result.outcome) {
+      case "sent": {
+        const r = result.record;
+        return answer(200, { status: "sent" }, "sent", user, {}, {
+          uploadId,
+          submissionId: r.submissionId,
+          sizeBytes: r.sizeBytes,
+          detectedType: r.detectedType,
+        });
+      }
+      case "not_found":
+        return answer(404, { error: "not_found" }, "not_found", user, {}, { uploadId });
+      case "incomplete":
+        return answer(409, { error: "incomplete" }, "incomplete", user, {}, { uploadId });
+      case "not_a_photo":
+        return answer(415, { error: "not_a_photo" }, "not_a_photo", user, {}, { uploadId, sizeBytes: result.sizeBytes });
+      case "not_saved":
+        log("could not save to ResourceSpace", { uploadId, ref: result.record?.ref, error: result.error });
+        return answer(502, { error: "not_saved" }, "not_saved", user, {}, {
+          uploadId,
+          submissionId: result.record?.submissionId,
+          sizeBytes: result.record?.sizeBytes,
+          detectedType: result.record?.detectedType,
+        });
+    }
   }
 
   // --- static files ----------------------------------------------------------
@@ -240,7 +365,7 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
 
     if (p !== BASE && !p.startsWith(`${BASE}/`)) return notFound(res);
     if (p === `${BASE}/health`) {
-      const health = await checkHealth(config);
+      const health = await checkHealth(config, rsConfigured);
       return sendJson(res, health.status === "ok" ? 200 : 503, health);
     }
     if (p === `${BASE}/api` || p.startsWith(`${BASE}/api/`)) return api(req, res, url);

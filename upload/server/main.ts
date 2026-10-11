@@ -12,8 +12,18 @@ service.listen(config.port, () => {
       message: "upload service listening",
       port: config.port,
       paused: config.uploadsPaused,
+      resourcespaceUser: config.rsUser,
+      resourcespaceKeySet: config.rsApiKey !== "",
     }) + "\n",
   );
+  if (!config.rsApiKey) {
+    process.stderr.write(
+      JSON.stringify({
+        time: new Date().toISOString(),
+        message: "RS_UPLOADER_API_KEY is not set: uploads are refused and members see the temporary-problem page",
+      }) + "\n",
+    );
+  }
 });
 
 function shutdown() {
