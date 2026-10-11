@@ -154,6 +154,52 @@ services:
       retries: 2
       start_period: 15m
 
+  # Member Media Upload (issue #33): the gated page and narrow API at
+  # https://${DOMAIN_NAME}/upload. Source and Dockerfile in upload/. Only
+  # /upload is routed here; ResourceSpace keeps every other path.
+  # Locked down per issue #23: non-root (USER in upload/Dockerfile), read-only
+  # root filesystem, no capabilities, resource limits, and only the networks
+  # that reach Traefik and ResourceSpace (never mariadb, clip or faces).
+  upload:
+    build: ./upload
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 128
+    tmpfs:
+      - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+    environment:
+      - PUBLIC_BASE_URL=https://${DOMAIN_NAME}
+      - AUTH_BASE_URL=${UPLOAD_AUTH_BASE_URL:-https://auth.sdfwa.org}
+      - RS_BASE_URL=http://resourcespace
+      - RENEW_URL=${UPLOAD_RENEW_URL:-https://www.sdfwa.org/membership}
+      # The kill switch: anything but false/0/no/off pauses uploads.
+      - UPLOADS_PAUSED=${UPLOADS_PAUSED:-false}
+      - STAGING_DIR=/staging
+    volumes:
+      # The dedicated staging volume (ADR 0004, issue #35), owned by
+      # 10001:10001 on the host. Required: there is deliberately no default,
+      # so staging can never land on the root disk by accident.
+      - type: bind
+        source: ${UPLOAD_STAGING_PATH:?set UPLOAD_STAGING_PATH to the upload staging volume mount (issue 35)}
+        target: /staging
+    networks:
+      - frontend
+      - dokploy-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=dokploy-network"
+      - "traefik.http.routers.media-upload.rule=Host(`${DOMAIN_NAME}`) && (Path(`/upload`) || PathPrefix(`/upload/`))"
+      - "traefik.http.routers.media-upload.priority=100"
+      - "traefik.http.routers.media-upload.entrypoints=websecure"
+      - "traefik.http.routers.media-upload.tls.certresolver=letsencrypt"
+      - "traefik.http.services.media-upload.loadbalancer.server.port=8080"
+
 networks:
   frontend:
   backend:
