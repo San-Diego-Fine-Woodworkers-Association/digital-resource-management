@@ -9,7 +9,7 @@ afterEach(async () => h?.close());
 interface Health {
   status: string;
   paused: boolean;
-  resourcespace: { reachable: boolean };
+  resourcespace: { reachable: boolean; configured: boolean };
   staging: { ok: boolean; writable: boolean; usedBytes: number; totalBytes: number; usedPercent: number; capPercent: number };
 }
 
@@ -28,7 +28,7 @@ describe("the health endpoint", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(body.status).toBe("ok");
     expect(body.paused).toBe(false);
-    expect(body.resourcespace).toEqual({ reachable: true });
+    expect(body.resourcespace).toEqual({ reachable: true, configured: true });
     expect(body.staging.ok).toBe(true);
     expect(body.staging.writable).toBe(true);
     expect(body.staging.totalBytes).toBeGreaterThan(0);

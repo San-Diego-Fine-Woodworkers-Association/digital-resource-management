@@ -176,7 +176,15 @@ services:
     environment:
       - PUBLIC_BASE_URL=https://${DOMAIN_NAME}
       - AUTH_BASE_URL=${UPLOAD_AUTH_BASE_URL:-https://auth.sdfwa.org}
-      - RS_BASE_URL=http://resourcespace
+      # ResourceSpace straight over the Docker network, answering as the public
+      # host (#17). Fallback if it refuses that: https://${DOMAIN_NAME}.
+      - RS_BASE_URL=${UPLOAD_RS_BASE_URL:-http://resourcespace}
+      # The least-privilege upload-service user (#34) and its API key, a
+      # Dokploy secret. Deliberately no `:?`: if the key is missing, the
+      # service starts and shows the temporary-problem page instead of failing
+      # the whole compose deploy.
+      - RS_UPLOADER_USER=${RS_UPLOADER_USER:-upload-service}
+      - RS_UPLOADER_API_KEY=${RS_UPLOADER_API_KEY:-}
       - RENEW_URL=${UPLOAD_RENEW_URL:-https://sdfwa.org/sdfwa-membership-levels/}
       # The kill switch: anything but false/0/no/off pauses uploads.
       - UPLOADS_PAUSED=${UPLOADS_PAUSED:-false}

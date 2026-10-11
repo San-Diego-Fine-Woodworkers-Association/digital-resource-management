@@ -19,7 +19,8 @@ export interface StagingHealth {
 export interface Health {
   status: "ok" | "degraded";
   paused: boolean;
-  resourcespace: { reachable: boolean };
+  /** configured: the upload-service API key is set (without it no upload can be taken). */
+  resourcespace: { reachable: boolean; configured: boolean };
   staging: StagingHealth;
 }
 
@@ -65,15 +66,15 @@ export function resourceSpaceReachable(config: Config): Promise<boolean> {
   });
 }
 
-export async function checkHealth(config: Config): Promise<Health> {
+export async function checkHealth(config: Config, configured: boolean): Promise<Health> {
   const [reachable, staging] = await Promise.all([
     resourceSpaceReachable(config),
     stagingHealth(config.stagingDir, config.stagingCapPercent),
   ]);
   return {
-    status: reachable && staging.ok ? "ok" : "degraded",
+    status: reachable && configured && staging.ok ? "ok" : "degraded",
     paused: config.uploadsPaused,
-    resourcespace: { reachable },
+    resourcespace: { reachable, configured },
     staging,
   };
 }

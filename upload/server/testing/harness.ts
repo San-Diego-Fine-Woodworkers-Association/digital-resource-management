@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { loadConfig } from "../config.ts";
 import { createService } from "../app.ts";
+import { createFakeResourceSpace, FAKE_RS_KEY, FAKE_RS_USER, type FakeResourceSpace } from "./fake-rs.ts";
 
 export const PUBLIC_BASE_URL = "https://media.example.org";
 export const UPLOAD_URL = `${PUBLIC_BASE_URL}/upload/`;
@@ -27,6 +28,7 @@ export interface SeenRequest {
   method: string;
   url: string;
   headers: http.IncomingHttpHeaders;
+  body: Buffer;
 }
 
 export interface FakeServer {
@@ -48,8 +50,10 @@ async function startFake(initial: (req: SeenRequest) => FakeReply): Promise<Fake
         server.close(() => resolve());
       }),
   };
-  const server = http.createServer((req, res) => {
-    const seen = { method: req.method ?? "", url: req.url ?? "", headers: req.headers };
+  const server = http.createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const seen = { method: req.method ?? "", url: req.url ?? "", headers: req.headers, body: Buffer.concat(chunks) };
     fake.seen.push(seen);
     const reply = fake.respond(seen);
     if (reply.hang) return;
@@ -85,7 +89,7 @@ export function signedInAs(user: FakeUser): (req: SeenRequest) => FakeReply {
   const full = {
     id: user.id ?? "user-1",
     email: user.email ?? "pat@example.org",
-    memberId: user.memberId ?? "M-100",
+    memberId: user.memberId === undefined ? "M-100" : user.memberId,
     membership: user.claims.includes("member") ? "Gold" : null,
     groups: [],
     claims: user.claims,
@@ -112,6 +116,8 @@ export interface Harness {
   url: string;
   auth: FakeServer;
   rs: FakeServer;
+  /** What the fake ResourceSpace API holds and was asked. */
+  fakeRs: FakeResourceSpace;
   stagingDir: string;
   auditLines: string[];
   close: () => Promise<void>;
@@ -119,7 +125,10 @@ export interface Harness {
 
 export async function startHarness(env: Record<string, string> = {}): Promise<Harness> {
   const auth = await startFake(signedOut);
-  const rs = await startFake(() => ({ status: 200, body: "<html>ResourceSpace</html>" }));
+  const fakeRs = createFakeResourceSpace();
+  const rs = await startFake((req) =>
+    req.url.startsWith("/api/") ? fakeRs.handle(req) : { status: 200, body: "<html>ResourceSpace</html>" },
+  );
 
   const work = await mkdtemp(path.join(tmpdir(), "upload-test-"));
   const stagingDir = path.join(work, "staging");
@@ -139,6 +148,8 @@ export async function startHarness(env: Record<string, string> = {}): Promise<Ha
     WEB_ROOT: webRoot,
     AUTH_TIMEOUT_MS: "500",
     RS_TIMEOUT_MS: "500",
+    RS_UPLOADER_USER: FAKE_RS_USER,
+    RS_UPLOADER_API_KEY: FAKE_RS_KEY,
     ...env,
   });
   const service = createService(config, { auditSink: (line) => auditLines.push(line), log: () => {} });
@@ -149,6 +160,7 @@ export async function startHarness(env: Record<string, string> = {}): Promise<Ha
     url,
     auth,
     rs,
+    fakeRs,
     stagingDir,
     auditLines,
     close: async () => {

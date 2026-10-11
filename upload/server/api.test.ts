@@ -159,7 +159,7 @@ describe("the audit log", () => {
     h = await startHarness();
     h.auth.respond = signedInAs({ claims: ["member"], email: "pat@example.org", id: "u-42" });
 
-    await api("/files", { method: "POST", body: "SECRET-FILE-BYTES" });
+    await api("/nope", { method: "POST", body: "SECRET-FILE-BYTES" });
 
     expect(h.auditLines).toHaveLength(1);
     const line = JSON.parse(h.auditLines[0]!);
@@ -167,7 +167,7 @@ describe("the audit log", () => {
       audit: true,
       event: "upload_request",
       method: "POST",
-      path: "/upload/api/files",
+      path: "/upload/api/nope",
       outcome: "not_found",
       user: { id: "u-42", email: "pat@example.org" },
     });

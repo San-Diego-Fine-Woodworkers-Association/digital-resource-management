@@ -45,6 +45,11 @@ Dokploy environment for it:
 * `UPLOAD_STAGING_PATH` (**required**, no default): the host mount point of the dedicated staging volume, owned by UID/GID `10001:10001`. The whole compose deploy fails until it is set.
 * `UPLOADS_PAUSED`: the kill switch. Anything but `false`/`0`/`no`/`off` shows the paused page and refuses writes. Defaults to `false`.
 * `UPLOAD_RENEW_URL` (default `https://sdfwa.org/sdfwa-membership-levels/`) and `UPLOAD_AUTH_BASE_URL` (default `https://auth.sdfwa.org`).
+* `RS_UPLOADER_API_KEY` (**secret**): the API key of the ResourceSpace `upload-service` user (Admin > Users > upload-service; see [docs/resourcespace-setup.md](docs/resourcespace-setup.md)). It stays on the server and never reaches the browser. If it is unset the deploy still succeeds, but the service refuses uploads, members see "We're busy right now", and `/upload/health` reports `resourcespace.configured: false`.
+* `RS_UPLOADER_USER` (default `upload-service`): that user's username.
+* `UPLOAD_RS_BASE_URL` (default `http://resourcespace`): where the service calls ResourceSpace. It goes straight over the Docker network with `Host: ${DOMAIN_NAME}`; if ResourceSpace ever refuses that, set it to `https://${DOMAIN_NAME}` to go through the public address instead.
+
+A member's photo goes up in 5 MB tus chunks to the staging volume, then the service creates the Item in ResourceSpace in Pending Review (archive -1) as `upload-service`, uploads the file under a synthesized name (`<title-slug>_<submission code>-001.<ext>`), writes the Title and the six Submitter fields from the verified session, and deletes the staged file. A small `<upload id>.item.json` record stays in staging so a retry reuses the same Item (#53).
 
 Develop in `upload/`: `npm ci`, then `npm run typecheck`, `npm test`, `npm run build`. The `Upload service checks` workflow runs the same on every pull request and builds the image.
 

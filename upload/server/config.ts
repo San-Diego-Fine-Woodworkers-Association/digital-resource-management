@@ -25,6 +25,20 @@ export interface Config {
   webRoot: string;
   authTimeoutMs: number;
   rsTimeoutMs: number;
+  /** The least-privilege ResourceSpace user every Item is created as (#24, #34). */
+  rsUser: string;
+  /**
+   * That user's API key (a Dokploy secret). Empty means not configured: the
+   * service then refuses uploads and shows the temporary-problem page rather
+   * than failing to start, so one missing secret cannot block a deploy.
+   */
+  rsApiKey: string;
+  /** ResourceSpace's resource type for photos ("Photo" is 1 on a stock install and on production). */
+  rsPhotoResourceType: number;
+  /** How long one ResourceSpace API call may take; the file upload includes preview generation. */
+  rsApiTimeoutMs: number;
+  /** The largest photo accepted, in bytes (#18: 50 MB). */
+  photoMaxBytes: number;
 }
 
 type Env = Record<string, string | undefined>;
@@ -82,5 +96,10 @@ export function loadConfig(env: Env): Config {
     webRoot: (env.WEB_ROOT ?? "").trim() || DEFAULT_WEB_ROOT,
     authTimeoutMs: int(env, "AUTH_TIMEOUT_MS", 5000, 1, 60000),
     rsTimeoutMs: int(env, "RS_TIMEOUT_MS", 3000, 1, 60000),
+    rsUser: (env.RS_UPLOADER_USER ?? "").trim() || "upload-service",
+    rsApiKey: (env.RS_UPLOADER_API_KEY ?? "").trim(),
+    rsPhotoResourceType: int(env, "RS_PHOTO_RESOURCE_TYPE", 1, 1, 1_000_000),
+    rsApiTimeoutMs: int(env, "RS_API_TIMEOUT_MS", 120_000, 1, 600_000),
+    photoMaxBytes: int(env, "PHOTO_MAX_BYTES", 50 * 1024 * 1024, 1, 1024 * 1024 * 1024),
   };
 }

@@ -67,9 +67,20 @@ describe("the upload container", () => {
     expect(upload.pids_limit).toBeGreaterThan(0);
   });
 
-  it("holds no database or ResourceSpace secrets", () => {
+  it("holds no database secrets and no ResourceSpace secret but the upload-service key", () => {
     const env = (upload.environment as string[]).join("\n");
     expect(env).not.toMatch(/MYSQL|MARIADB|SCRAMBLE|PASSWORD/);
+    expect((upload.environment as string[]).filter((e) => /KEY|SECRET|TOKEN/.test(e))).toEqual([
+      "RS_UPLOADER_API_KEY=${RS_UPLOADER_API_KEY:-}",
+    ]);
+  });
+
+  // A required variable (`:?`) that is unset fails the whole compose deploy,
+  // which blocks every other service's deploy too. Only the staging path may
+  // do that (ADR 0004); a missing key fails closed inside the service instead.
+  it("requires no environment variable to be set", () => {
+    const env = (upload.environment as string[]).join("\n");
+    expect(env).not.toContain(":?");
   });
 });
 
