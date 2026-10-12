@@ -5,9 +5,11 @@
 //    A bad signature answers 401 "Invalid signature".
 //  - create_resource(resource_type, archive): the integer ref, or bare `false`
 //    for an archive state the upload-service user may not use (anything but -1).
-//  - upload_multipart(ref, no_exif, revert): a multipart POST with the file in
-//    the form field `file`; 204 on success. The file name sent becomes the
-//    Item's Original filename.
+//  - upload_multipart(ref, no_exif, revert, autorotate): a multipart POST with
+//    the file in the form field `file`; 204 on success. The file name sent
+//    becomes the Item's Original filename. Real RS defaults autorotate to
+//    false and then stores phone photos sideways (#71), so the fake refuses
+//    an upload that does not ask for it.
 //  - update_field(resource, field, value): `true`, or `false` for a field the
 //    user may not write (here: anything but the proxy's 13 shortnames).
 import { createHash } from "node:crypto";
@@ -119,6 +121,9 @@ export function createFakeResourceSpace(): FakeResourceSpace {
           if (req.method !== "POST") return { status: 405, json: { error: "POST only" } };
           if (!resource) return { json: { status: "FAILED", data: { message: "Permission denied" } } };
           if (params.get("no_exif") === null || params.get("revert") === null) return { status: 400, json: false };
+          if (params.get("autorotate") !== "1") {
+            return { status: 400, json: { status: "FAILED", data: { message: "fake RS: autorotate not requested (#71)" } } };
+          }
           // Seen on a real RS 11.0 (r29660): with metadata extraction asked for
           // as no_exif=0 it trips over a missing `file_name` request value.
           if (params.get("no_exif") === "0") {
