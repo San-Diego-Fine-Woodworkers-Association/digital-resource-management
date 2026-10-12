@@ -2,10 +2,10 @@
 // The photo goes up over tus (driven by tus-js-client, the library under
 // Uppy's tus plugin), then the page asks the service to hand it to
 // ResourceSpace. Auth and ResourceSpace are fakes (testing/harness.ts,
-// testing/fake-rs.ts).
+// testing/fake-rs.ts). Many photos and videos at once are in many.test.ts.
 import { readdir } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
-import * as tus from "tus-js-client";
+import { client, heic, jpeg, member, png, type UploadOptions } from "./testing/client.ts";
 import { FAKE_RS_KEY } from "./testing/fake-rs.ts";
 import { COOKIE, signedInAs, startHarness, type Harness } from "./testing/harness.ts";
 
@@ -14,67 +14,8 @@ afterEach(async () => h?.close());
 
 const RIGHTS = 'I took these, or I have permission to share them with SDFWA';
 
-/** A small but real-looking JPEG: the magic bytes, then filler. */
-function jpeg(size = 300_000): Buffer {
-  const b = Buffer.alloc(size, 7);
-  b.set([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00]);
-  return b;
-}
-
-function heic(size = 50_000): Buffer {
-  const b = Buffer.alloc(size, 3);
-  b.set([0x00, 0x00, 0x00, 0x18]);
-  b.write("ftypheic", 4, "latin1");
-  return b;
-}
-
-function png(size = 20_000): Buffer {
-  const b = Buffer.alloc(size, 1);
-  b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  return b;
-}
-
-interface SendOptions {
-  cookie?: string;
-  metadata?: Record<string, string>;
-  chunkSize?: number;
-}
-
-/** Uploads over tus as the page does; resolves with the upload's id. */
-function upload(data: Buffer, opts: SendOptions = {}): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const u = new tus.Upload(data, {
-      endpoint: `${h.url}/upload/api/files/`,
-      headers: { cookie: opts.cookie ?? COOKIE },
-      chunkSize: opts.chunkSize ?? 100_000,
-      metadata: opts.metadata ?? { filename: "IMG_4821.JPG", filetype: "image/jpeg" },
-      retryDelays: [],
-      storeFingerprintForResuming: false,
-      onError: reject,
-      onSuccess: () => resolve(u.url!.split("/").pop()!),
-    });
-    u.start();
-  });
-}
-
-function finish(uploadId: string, body: Record<string, unknown> = {}, cookie = COOKIE) {
-  return fetch(`${h.url}/upload/api/items`, {
-    method: "POST",
-    headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ uploadId, title: "Dovetail class, May 3", rightsConfirmed: true, ...body }),
-  });
-}
-
-function member(extra: Partial<Parameters<typeof signedInAs>[0]> = {}) {
-  return signedInAs({
-    claims: ["member"],
-    id: "u-42",
-    email: "pat@example.org",
-    memberId: "M-1234",
-    name: "Pat Member",
-    ...extra,
-  });
-}
+const upload = (data: Buffer, opts?: UploadOptions) => client(h).upload(data, opts);
+const finish = (uploadId: string, body?: Record<string, unknown>, cookie?: string) => client(h).finish(uploadId, body, cookie);
 
 const only = <T>(m: Map<number, T>): T => {
   expect(m.size).toBe(1);
@@ -391,7 +332,7 @@ describe("trying again", () => {
 });
 
 describe("what the service refuses", () => {
-  it("a file that is not a photo, whatever it is called, and removes it from staging", async () => {
+  it("a file that is not a photo or video we take, whatever it is called, and removes it from staging", async () => {
     h = await startHarness();
     h.auth.respond = member();
 
@@ -401,7 +342,7 @@ describe("what the service refuses", () => {
     const res = await finish(id);
 
     expect(res.status).toBe(415);
-    expect(await res.json()).toEqual({ error: "not_a_photo" });
+    expect(await res.json()).toEqual({ error: "wrong_type" });
     expect(h.fakeRs.calls).toHaveLength(0);
     expect((await readdir(h.stagingDir)).filter((f) => f.startsWith(id) && !f.endsWith(".item.json"))).toEqual([]);
   });
@@ -430,10 +371,8 @@ describe("what the service refuses", () => {
   it("a hand-off before the whole photo has arrived", async () => {
     h = await startHarness();
     h.auth.respond = member();
-    const create = await fetch(`${h.url}/upload/api/files/`, {
-      method: "POST",
-      headers: { cookie: COOKIE, "tus-resumable": "1.0.0", "upload-length": "1000" },
-    });
+    const c = client(h);
+    const create = await c.create(await c.startSubmission(), 1000);
     expect(create.status).toBe(201);
     const id = create.headers.get("location")!.split("/").pop()!;
 
@@ -451,11 +390,28 @@ describe("what the service refuses", () => {
     expect((await finish("../../etc/passwd")).status).toBe(404);
   });
 
-  it("a photo over the size limit, before storing it", async () => {
+  it("a photo over the size limit, removing it from staging", async () => {
     h = await startHarness({ PHOTO_MAX_BYTES: "100000" });
     h.auth.respond = member();
 
+    const id = await upload(jpeg(100_001));
+    const res = await finish(id);
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ error: "too_big" });
+    expect(h.fakeRs.calls).toHaveLength(0);
+    expect(await readdir(h.stagingDir)).toEqual([]);
+  });
+
+  it("a file bigger than any we take, before storing it", async () => {
+    h = await startHarness({ VIDEO_MAX_BYTES: "100000" });
+    h.auth.respond = member();
+
     await expect(upload(jpeg(100_001))).rejects.toThrow(/413/);
+    const c = client(h);
+    const res = await c.create(await c.startSubmission(), 100_001);
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ error: "too_big" });
     expect(await readdir(h.stagingDir)).toEqual([]);
   });
 
@@ -475,10 +431,8 @@ describe("what the service refuses", () => {
   it("downloading a staged file, even your own", async () => {
     h = await startHarness();
     h.auth.respond = member();
-    const create = await fetch(`${h.url}/upload/api/files/`, {
-      method: "POST",
-      headers: { cookie: COOKIE, "tus-resumable": "1.0.0", "upload-length": "10" },
-    });
+    const c = client(h);
+    const create = await c.create(await c.startSubmission(), 10);
 
     const res = await fetch(new URL(create.headers.get("location")!, h.url), { headers: { cookie: COOKIE } });
 
@@ -488,10 +442,8 @@ describe("what the service refuses", () => {
   it("someone else's upload: they cannot see or add to it", async () => {
     h = await startHarness();
     h.auth.respond = member();
-    const create = await fetch(`${h.url}/upload/api/files/`, {
-      method: "POST",
-      headers: { cookie: COOKIE, "tus-resumable": "1.0.0", "upload-length": "10" },
-    });
+    const c = client(h);
+    const create = await c.create(await c.startSubmission(), 10);
     const location = create.headers.get("location")!;
 
     h.auth.respond = signedInAs({ claims: ["member"], id: "u-99" });

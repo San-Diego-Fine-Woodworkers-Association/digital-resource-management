@@ -8,15 +8,20 @@
 //     browser gives a file is never used on disk;
 //   - each upload belongs to the member who created it, and nobody else can
 //     see it, add to it or hand it over;
+//   - each upload goes into one of the member's Submissions, and is refused
+//     when that Submission has no room for it (submissions.ts);
 //   - of the metadata the browser sends, only the device's file name is kept,
-//     as the Item's Original Filename. Everything else is dropped.
+//     as the Item's Original Filename, and the Submission it names, once
+//     checked. Everything else is dropped.
 import type http from "node:http";
 import { Server } from "@tus/server";
 import { FileStore } from "@tus/file-store";
 import type { Upload } from "@tus/utils";
+import type { Refusal } from "../shared/media.ts";
 import type { Config } from "./config.ts";
 import { originalFileName } from "./naming.ts";
 import type { SessionUser } from "./session.ts";
+import type { Submissions } from "./submissions.ts";
 
 export const FILES_PATH = "/upload/api/files";
 
@@ -33,6 +38,10 @@ export interface UploadInfo {
   owner: string;
   /** The name on the member's device, cleaned (for Submitter Original Filename only). */
   originalName: string;
+  /** The Submission it belongs to, checked when it was created. */
+  submissionId: string;
+  /** Its number within the Submission, from 1, for the File name. */
+  itemNumber: number;
   size: number | undefined;
   offset: number;
   path: string;
@@ -47,13 +56,26 @@ export interface Uploads {
   remove(id: string): Promise<void>;
 }
 
+/** How each refusal is answered, here and on the hand-off (app.ts). */
+export const REFUSAL_STATUS: Record<Refusal, number> = {
+  wrong_type: 415,
+  too_big: 413,
+  too_much_in_all: 413,
+  too_many: 422,
+  too_many_videos: 422,
+};
+
 function toInfo(u: Upload): UploadInfo | undefined {
   const owner = u.metadata?.owner;
-  if (!owner || !u.storage?.path) return undefined;
+  const submissionId = u.metadata?.submission;
+  const itemNumber = Number(u.metadata?.item);
+  if (!owner || !submissionId || !Number.isInteger(itemNumber) || itemNumber < 1 || !u.storage?.path) return undefined;
   return {
     id: u.id,
     owner,
     originalName: u.metadata?.filename ?? "",
+    submissionId,
+    itemNumber,
     size: u.size,
     offset: u.offset,
     path: u.storage.path,
@@ -66,16 +88,34 @@ function nodeRequest(req: unknown): http.IncomingMessage | undefined {
   return r.runtime?.node?.req;
 }
 
-export function createUploads(config: Config): Uploads {
+/** A tus refusal: thrown from a hook, answered with this status and a JSON body like the rest of the API. */
+function refuse(status: number, error: string) {
+  return { status_code: status, body: JSON.stringify({ error }) };
+}
+
+function sendError(res: http.ServerResponse, status: number, error: string) {
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Tus-Resumable": "1.0.0",
+    "Cache-Control": "no-store",
+    Connection: "close",
+  });
+  res.end(JSON.stringify({ error }));
+}
+
+export function createUploads(config: Config, submissions: Submissions): Uploads {
   const store = new FileStore({ directory: config.stagingDir });
   const users = new WeakMap<http.IncomingMessage, SessionUser>();
   const created = new WeakMap<http.IncomingMessage, string>();
   const publicOrigin = new URL(config.publicBaseUrl).origin;
+  const { limits } = config;
 
   const tus = new Server({
     path: FILES_PATH,
     datastore: store,
-    maxSize: config.photoMaxBytes,
+    // The largest file of any kind. Whether it is a photo (and so must be
+    // much smaller) is only known from its content, at the hand-off.
+    maxSize: limits.videoMaxBytes,
     relativeLocation: true,
     respectForwardedHeaders: false,
     allowedOrigins: [publicOrigin],
@@ -84,9 +124,17 @@ export function createUploads(config: Config): Uploads {
       const user = node && users.get(node);
       // Cannot happen (app.ts always sets it); refuse rather than store an orphan.
       if (!node || !user) throw { status_code: 500, body: "internal\n" };
+      // The size must be known up front: the Submission's room is reserved from it.
+      if (upload.size === undefined) throw refuse(400, "invalid");
+      const submissionId = upload.metadata?.submission ?? "";
+      const room = submissions.reserve(submissionId, user, upload.id, upload.size);
+      if ("unknown" in room) throw refuse(404, "not_found");
+      if ("refusal" in room) throw refuse(REFUSAL_STATUS[room.refusal], room.refusal);
       created.set(node, upload.id);
       const name = upload.metadata?.filename ?? upload.metadata?.name;
-      return { metadata: { owner: user.id, filename: originalFileName(name) } };
+      return {
+        metadata: { owner: user.id, filename: originalFileName(name), submission: submissionId, item: String(room.itemNumber) },
+      };
     },
   });
 
@@ -113,10 +161,18 @@ export function createUploads(config: Config): Uploads {
         res.end("Method not allowed\n");
         return {};
       }
+      // Bigger than any file we take: say so in the API's own words (tus
+      // would refuse it too, in its own).
+      if (req.method === "POST" && Number(req.headers["upload-length"]) > limits.videoMaxBytes) {
+        sendError(res, 413, "too_big");
+        return {};
+      }
+      let mine: UploadInfo | undefined;
       if (rest !== "") {
         // HEAD, PATCH or DELETE of one upload: only its owner may.
         const id = rest.replace(/\/$/, "");
-        if (!(await find(id, user))) {
+        mine = await find(id, user);
+        if (!mine) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", "Tus-Resumable": "1.0.0", Connection: "close" });
           res.end("Not found\n");
           return {};
@@ -124,6 +180,8 @@ export function createUploads(config: Config): Uploads {
       }
       users.set(req, user);
       await tus.handle(req, res);
+      // The member took it out before it was handed over: free its room.
+      if (req.method === "DELETE" && mine && res.statusCode === 204) submissions.release(mine.submissionId, mine.id);
       return { createdId: res.statusCode === 201 ? created.get(req) : undefined };
     },
     find,
