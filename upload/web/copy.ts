@@ -112,6 +112,8 @@ export const copy = {
     waiting: "Waiting…",
     sending: "Sending…",
     finishing: "Finishing up…",
+    // #31's line in full; only a video takes long enough to need it (#55).
+    finishingVideo: "Finishing up… (videos can take a few minutes)",
     sent: "✓ Sent",
     couldNotSave: "Couldn't save this one",
     tryAgain: "Try again",

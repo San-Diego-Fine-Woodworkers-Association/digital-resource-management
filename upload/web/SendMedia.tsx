@@ -260,7 +260,7 @@ function ItemRow({
   const label = {
     waiting: copy.sending.waiting,
     sending: copy.sending.sending,
-    finishing: copy.sending.finishing,
+    finishing: item.kind === "video" ? copy.sending.finishingVideo : copy.sending.finishing,
     sent: copy.sending.sent,
     failed: copy.sending.couldNotSave,
     refused:
@@ -278,6 +278,8 @@ function ItemRow({
           {label}
         </p>
         {state.status === "sending" && <ProgressBar value={state.percent} aria-label={item.file.name} />}
+        {/* Still moving while ResourceSpace makes a video's previews, so it never looks stuck (#55). */}
+        {state.status === "finishing" && <ProgressBar isIndeterminate aria-label={item.file.name} />}
         {state.status === "failed" && (
           <Button variant="primary" size="large" className="w-full" onPress={onTryAgain}>
             {copy.sending.tryAgain}

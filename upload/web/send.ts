@@ -49,6 +49,11 @@ const ITEMS_ENDPOINT = "/upload/api/items";
 /** #17: small chunks (5–8 MB) keep each request well inside Traefik's 60 s read timeout. */
 const CHUNK_SIZE = 5 * 1024 * 1024;
 
+/** How often the page asks how a hand-off is going while it shows Finishing up (#55). */
+const POLL_EVERY_MS = 3000;
+/** Asks in a row that may go unanswered (a blip in the connection) before it counts as failed: about a minute. */
+const POLL_MISSES = 20;
+
 /** The service's reason for refusing a file, from a JSON `{error}` body, if it gave one. */
 function refusalIn(body: unknown): Refusal | undefined {
   if (typeof body !== "string") return undefined;
@@ -164,18 +169,54 @@ function createSubmission(): Submission {
       if (!uploaded) return { ok: false, reason: "failed" };
       events.onProgress(100);
       events.onFinishing();
-      try {
-        const res = await fetch(ITEMS_ENDPOINT, {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ uploadId: uploaded.uploadId, title: details.title, rightsConfirmed: details.rightsConfirmed }),
-        });
-        if (res.ok) return { ok: true };
-        return { ok: false, reason: refusalIn(await res.text()) ?? "failed" };
-      } catch {
-        return { ok: false, reason: "failed" };
-      }
+      return handOver(uploaded.uploadId, details);
     },
   };
+}
+
+/**
+ * Asks the service to hand an arrived file to ResourceSpace, and waits until
+ * ResourceSpace has it. A big video takes minutes there, so the service may
+ * answer 202 "finishing" at once; then the Item's status is polled (#55).
+ */
+export async function handOver(uploadId: string, details: SendDetails, pollEveryMs = POLL_EVERY_MS): Promise<SendResult> {
+  let res: Response;
+  try {
+    res = await fetch(ITEMS_ENDPOINT, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ uploadId, ...details }),
+    });
+  } catch {
+    // The connection dropped while waiting: the hand-off may be under way
+    // all the same, so ask how it is going.
+    return finished(uploadId, pollEveryMs);
+  }
+  if (res.status === 202) return finished(uploadId, pollEveryMs);
+  if (res.ok) return { ok: true };
+  return { ok: false, reason: refusalIn(await res.text().catch(() => "")) ?? "failed" };
+}
+
+/** Polls the Item's status until the hand-off is over. "failed" lets the member try again, which picks up where it stopped. */
+async function finished(uploadId: string, pollEveryMs: number): Promise<SendResult> {
+  let misses = 0;
+  while (misses < POLL_MISSES) {
+    await new Promise((resolve) => setTimeout(resolve, pollEveryMs));
+    let body: { status?: unknown; error?: unknown };
+    try {
+      const res = await fetch(`${ITEMS_ENDPOINT}/${encodeURIComponent(uploadId)}`, { credentials: "same-origin" });
+      if (res.status === 404) return { ok: false, reason: "failed" };
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      body = (await res.json()) as typeof body;
+    } catch {
+      misses++;
+      continue;
+    }
+    misses = 0;
+    if (body.status === "sent") return { ok: true };
+    if (body.status === "refused" && isRefusal(body.error)) return { ok: false, reason: body.error };
+    if (body.status !== "finishing") return { ok: false, reason: "failed" };
+  }
+  return { ok: false, reason: "failed" };
 }

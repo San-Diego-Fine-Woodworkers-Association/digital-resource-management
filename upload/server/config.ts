@@ -38,8 +38,21 @@ export interface Config {
   rsPhotoResourceType: number;
   /** ResourceSpace's resource type for videos ("Video" is 3 on a stock install and on production, #22). */
   rsVideoResourceType: number;
-  /** How long one ResourceSpace API call may take; the file upload includes preview generation. */
+  /** How long a ResourceSpace API call may sit without a byte of answer. */
   rsApiTimeoutMs: number;
+  /**
+   * The same for the file upload, which ResourceSpace only answers once it
+   * has made the previews: for a long video that is minutes (#55). Longer
+   * than PHP's 300 s max_execution_time, which on Linux counts only PHP's
+   * own CPU time and not ffmpeg's, so it is no wall-clock ceiling.
+   */
+  rsUploadTimeoutMs: number;
+  /**
+   * How long the hand-off request waits for ResourceSpace before answering
+   * "finishing" and carrying on in the background; the page then polls the
+   * Item's status (#55).
+   */
+  handOffWaitMs: number;
   /**
    * The per-file and per-Submission limits (#18). The defaults are the
    * decided values the page also shows (shared/media.ts); the environment can
@@ -108,6 +121,8 @@ export function loadConfig(env: Env): Config {
     rsPhotoResourceType: int(env, "RS_PHOTO_RESOURCE_TYPE", 1, 1, 1_000_000),
     rsVideoResourceType: int(env, "RS_VIDEO_RESOURCE_TYPE", 3, 1, 1_000_000),
     rsApiTimeoutMs: int(env, "RS_API_TIMEOUT_MS", 120_000, 1, 600_000),
+    rsUploadTimeoutMs: int(env, "RS_UPLOAD_TIMEOUT_MS", 900_000, 1, 3_600_000),
+    handOffWaitMs: int(env, "HANDOFF_WAIT_MS", 5_000, 0, 60_000),
     limits: {
       photoMaxBytes: int(env, "PHOTO_MAX_BYTES", LIMITS.photoMaxBytes, 1, LIMITS.photoMaxBytes),
       videoMaxBytes: int(env, "VIDEO_MAX_BYTES", LIMITS.videoMaxBytes, 1, LIMITS.videoMaxBytes),

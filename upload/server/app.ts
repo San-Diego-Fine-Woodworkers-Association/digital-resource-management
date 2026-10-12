@@ -6,6 +6,7 @@
 //     POST /submissions    start a Submission: its id goes on every upload (submissions.ts)
 //     /files, /files/<id>  tus: each photo or video arrives in chunks (uploads.ts)
 //     POST /items          hand an arrived one to ResourceSpace (items.ts)
+//     GET /items/<id>      where that hand-off has got to; the page polls it
 //     GET /session         who is signed in
 //   /upload/health         staging usage and ResourceSpace reachability
 //
@@ -18,7 +19,7 @@ import { BOOT_ELEMENT_ID, type Boot } from "../shared/boot.ts";
 import { createAuditLog, stdoutSink, type AuditEvent, type AuditSink } from "./audit.ts";
 import type { Config } from "./config.ts";
 import { checkHealth } from "./health.ts";
-import { createItems, MAX_TITLE, type HandOffRequest } from "./items.ts";
+import { createItems, MAX_TITLE, type HandOffRequest, type HandOffResult } from "./items.ts";
 import { createResourceSpace } from "./resourcespace.ts";
 import { checkSession, displayName, isEntitled, type Session, type SessionUser } from "./session.ts";
 import { createSubmissions } from "./submissions.ts";
@@ -103,6 +104,23 @@ function parseHandOff(body: unknown): HandOffRequest | { error: string } {
   if (title.length > MAX_TITLE) return { error: "title_too_long" };
   if (b.rightsConfirmed !== true) return { error: "rights_required" };
   return { uploadId: b.uploadId, title, rightsConfirmed: true };
+}
+
+/** The promise's value if it settles within `ms`, otherwise undefined (it carries on). */
+function within<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(undefined), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
 }
 
 function securityHeaders(res: http.ServerResponse) {
@@ -264,6 +282,12 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
     const isFiles = url.pathname === FILES_PATH || url.pathname.startsWith(`${FILES_PATH}/`);
     const isItems = route === "/items";
     const isSubmissions = route === "/submissions";
+    if (route.startsWith("/items/") && (method === "GET" || method === "HEAD")) {
+      const status = await items.status(route.slice("/items/".length), s.user);
+      if (status.status === "not_found") return answer(404, { error: "not_found" }, "not_found", s.user);
+      const body = status.status === "refused" ? { status: "refused", error: status.refusal } : status;
+      return answer(200, body, "ok", s.user);
+    }
     if ((isFiles || isItems || isSubmissions) && !rsConfigured) {
       log("refusing uploads: RS_UPLOADER_API_KEY is not set");
       return answer(503, { error: "unavailable" }, "not_configured", s.user, { "Retry-After": "300" });
@@ -276,7 +300,7 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
       }
       return;
     }
-    if (isItems && method === "POST") return handOff(req, s.user, answer);
+    if (isItems && method === "POST") return handOff(req, s.user, answer, record);
     if (isSubmissions && method === "POST") return startSubmission(req, s.user, answer);
     return answer(404, { error: "not_found" }, "not_found", s.user);
   }
@@ -302,7 +326,9 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
     return answer(201, { submissionId }, "submission_started", user, {}, { submissionId });
   }
 
-  async function handOff(req: http.IncomingMessage, user: SessionUser, answer: Answer) {
+  type RecordAudit = (outcome: string, user?: SessionUser, extra?: Partial<AuditEvent>) => void;
+
+  async function handOff(req: http.IncomingMessage, user: SessionUser, answer: Answer, record: RecordAudit) {
     let body: unknown;
     try {
       body = await readJson(req);
@@ -314,36 +340,57 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
     if ("error" in parsed) return answer(parsed.error === "invalid" ? 400 : 422, { error: parsed.error }, parsed.error, user);
 
     const name = await displayName(req.headers.cookie ?? "", user, authOpts);
-    const result = await items.handOff(parsed, { user, name });
     const uploadId = parsed.uploadId.slice(0, 64);
+    const pending = items.handOff(parsed, { user, name });
+    // A big video keeps ResourceSpace busy for minutes, longer than a phone
+    // should hold a request open (#55). Past a short wait the page is told
+    // "finishing" and polls GET /items/<id>; the hand-off carries on here
+    // and its outcome still gets its audit line.
+    const result = await within(pending, config.handOffWaitMs);
+    if (result) {
+      const [status, body, outcome, extra] = handOffAnswer(result, uploadId);
+      return answer(status, body, outcome, user, {}, extra);
+    }
+    answer(202, { status: "finishing" }, "finishing", user, {}, { uploadId });
+    pending.then(
+      (late) => {
+        const [, , outcome, extra] = handOffAnswer(late, uploadId);
+        record(outcome, user, extra);
+      },
+      (err: unknown) => log("hand-off failed", { uploadId, error: err instanceof Error ? err.message : String(err) }),
+    );
+  }
+
+  /** How a hand-off's result is answered and audited. */
+  function handOffAnswer(result: HandOffResult, uploadId: string): [number, unknown, string, Partial<AuditEvent>] {
     switch (result.outcome) {
       case "sent": {
         const r = result.record;
-        return answer(200, { status: "sent" }, "sent", user, {}, {
+        return [200, { status: "sent" }, "sent", {
           uploadId,
           submissionId: r.submissionId,
           sizeBytes: r.sizeBytes,
           detectedType: r.detectedType,
-        });
+        }];
       }
       case "not_found":
-        return answer(404, { error: "not_found" }, "not_found", user, {}, { uploadId });
+        return [404, { error: "not_found" }, "not_found", { uploadId }];
       case "incomplete":
-        return answer(409, { error: "incomplete" }, "incomplete", user, {}, { uploadId });
+        return [409, { error: "incomplete" }, "incomplete", { uploadId }];
       case "refused":
-        return answer(REFUSAL_STATUS[result.refusal], { error: result.refusal }, result.refusal, user, {}, {
+        return [REFUSAL_STATUS[result.refusal], { error: result.refusal }, result.refusal, {
           uploadId,
           sizeBytes: result.sizeBytes,
           detectedType: result.detectedType,
-        });
+        }];
       case "not_saved":
         log("could not save to ResourceSpace", { uploadId, ref: result.record?.ref, error: result.error });
-        return answer(502, { error: "not_saved" }, "not_saved", user, {}, {
+        return [502, { error: "not_saved" }, "not_saved", {
           uploadId,
           submissionId: result.record?.submissionId,
           sizeBytes: result.record?.sizeBytes,
           detectedType: result.record?.detectedType,
-        });
+        }];
     }
   }
 
