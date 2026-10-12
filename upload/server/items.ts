@@ -16,9 +16,8 @@
 //
 // ResourceSpace's API does not enforce required fields, and drops a choice it
 // does not know without saying so (ADR 0003). So after writing, the service
-// reads the Item back and confirms the required fields and the Submission ID
-// hold what was written, and that each choice is still one ResourceSpace
-// offers. Anything that does not is written again, up to 3 times; if it still
+// reads the Item back and confirms every field it wrote holds what was
+// written, and that each choice is still one ResourceSpace offers. Anything that does not is written again, up to 3 times; if it still
 // does not hold, that is logged and the Item counts as received anyway: a
 // Reviewer fills the gap at Approval.
 //
@@ -52,8 +51,6 @@ export interface HandOffRequest {
 /** How many times the read-back writes a field again before giving up on it. */
 export const READ_BACK_RETRIES = 3;
 
-/** Read back after each write to confirm it: the required fields, and the Submission ID the review link searches by (#36). */
-const CONFIRMED_FIELDS = ["title", "programevent", "subjecttype", "submissionid"] as const;
 
 export interface Submitter {
   user: SessionUser;
@@ -236,8 +233,11 @@ export function createItems(
    * the end is logged and returned.
    */
   async function readBack(ref: number, written: [string, string][], submission: SubmissionRecord): Promise<string[]> {
-    const toConfirm = written.filter(([field]) => (CONFIRMED_FIELDS as readonly string[]).includes(field));
-    let wrong = toConfirm.map(([field]) => field);
+    // Every field written, not only the required ones: one request reads them
+    // all, and an optional answer lost (a place deactivated since the page
+    // loaded) is worth a line in the log too. Checked against RS 11.0 r29660:
+    // each comes back exactly as written, Subject Type as "A, B".
+    let wrong = written.map(([field]) => field);
     let lastError: string | undefined;
     for (let attempt = 0; ; attempt++) {
       try {
@@ -245,14 +245,14 @@ export function createItems(
         // the member chose it is still saved by ResourceSpace, and only this
         // catches it.
         const [values, live] = await Promise.all([rs.fieldValues(ref), options.get(0)]);
-        wrong = toConfirm.filter(([field, value]) => !holds(field, value, values[field], live)).map(([field]) => field);
+        wrong = written.filter(([field, value]) => !holds(field, value, values[field], live)).map(([field]) => field);
         lastError = undefined;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
       }
       if (wrong.length === 0 || attempt === READ_BACK_RETRIES) break;
       await sleep(retryDelayMs * (attempt + 1));
-      for (const [field, value] of toConfirm) {
+      for (const [field, value] of written) {
         if (!wrong.includes(field)) continue;
         try {
           await rs.updateField(ref, field, value);
@@ -335,7 +335,7 @@ function holds(field: string, written: string, read: string | undefined, live: O
     const got = read.split(",").map((s) => s.trim()).filter(Boolean);
     return want.length === got.length && want.every((w) => got.includes(w) && live.subjecttype.includes(w));
   }
-  if (field === "programevent") return read === written && live.programevent.includes(written);
+  if (field === "programevent" || field === "location") return read === written && live[field].includes(written);
   return read === written;
 }
 

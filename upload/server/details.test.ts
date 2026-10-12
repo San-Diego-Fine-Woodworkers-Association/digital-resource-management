@@ -453,6 +453,38 @@ describe("the read-back", () => {
     expect(h.logLines[0]!.fields).toMatchObject({ submissionId: submission, fields: ["programevent"] });
   });
 
+  it("confirms the optional answers too, writing again one that did not hold", async () => {
+    h = await startHarness();
+    h.auth.respond = member();
+    const c = client(h);
+    const submission = await c.startSubmission(COOKIE, startBody({ details: { caption: "Cut by hand", location: "Shop" } }));
+    let lost = 1;
+    h.fakeRs.failWhen = (call) =>
+      call.fn === "update_field" && call.params.get("field") === "caption" && lost-- > 0 ? { json: true } : undefined;
+
+    expect((await c.finish(await c.upload(jpeg(), { submission }))).status).toBe(200);
+
+    expect(only().fields.caption).toBe("Cut by hand");
+    expect(calls("update_field", "caption")).toHaveLength(2);
+    expect(calls("update_field", "location")).toHaveLength(1);
+    expect(h.logLines).toEqual([]);
+  });
+
+  it("catches a place deactivated after the member chose it, like the required choices", async () => {
+    h = await startHarness();
+    h.auth.respond = member();
+    const c = client(h);
+    const submission = await c.startSubmission(COOKIE, startBody({ details: { location: "Shop Tour" } }));
+    const id = await c.upload(jpeg(), { submission });
+    option("location", "Shop Tour").active = false;
+
+    expect((await c.finish(id)).status).toBe(200);
+
+    expect(calls("update_field", "location")).toHaveLength(4);
+    expect(h.logLines).toHaveLength(1);
+    expect(h.logLines[0]!.fields).toMatchObject({ submissionId: submission, fields: ["location"] });
+  });
+
   it("checks every chosen subject, not just the first", async () => {
     h = await startHarness();
     h.auth.respond = member();
@@ -481,7 +513,18 @@ describe("the read-back", () => {
     expect(calls("get_resource_field_data")).toHaveLength(4);
     expect(h.logLines).toHaveLength(1);
     expect(h.logLines[0]!.fields).toMatchObject({
-      fields: ["title", "programevent", "subjecttype", "submissionid"],
+      // Nothing could be read, so nothing written is confirmed.
+      fields: expect.arrayContaining([
+        "title",
+        "programevent",
+        "subjecttype",
+        "submittername",
+        "submitteremail",
+        "submittermemberid",
+        "submissionid",
+        "submitterrights",
+        "submitterfilename",
+      ]),
       error: expect.stringContaining("get_resource_field_data"),
     });
   });
