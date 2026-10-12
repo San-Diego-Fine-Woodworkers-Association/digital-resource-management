@@ -4,11 +4,11 @@ import { AppLayout, Link } from "@sdwa/components";
 import type { Boot } from "../shared/boot.ts";
 import { copy } from "./copy.ts";
 import type { Sender } from "./send.ts";
-import { SendPhoto } from "./SendPhoto.tsx";
+import { SendMedia } from "./SendMedia.tsx";
 import { Page } from "./ui.tsx";
 
 /** Used only if no sender is given: every send fails, so nothing is lost silently. */
-const noSender: Sender = { send: async () => ({ ok: false, reason: "failed" }) };
+const noSender: Sender = { begin: () => ({ send: async () => ({ ok: false, reason: "failed" }) }) };
 
 export function App({ boot, sender = noSender }: { boot: Boot; sender?: Sender }) {
   // Light theme only in v1 (issue #31).
@@ -20,7 +20,7 @@ function screenFor(boot: Boot, sender: Sender) {
     case "app":
       return (
         <Page user={boot.user} signOutUrl={boot.signOutUrl}>
-          <SendPhoto sender={sender} />
+          <SendMedia sender={sender} />
         </Page>
       );
     case "not-member":

@@ -2,6 +2,7 @@
 // Dokploy). A bad value stops the service from starting rather than running
 // half-configured.
 import path from "node:path";
+import { LIMITS, type Limits } from "../shared/media.ts";
 
 export interface Config {
   port: number;
@@ -35,10 +36,16 @@ export interface Config {
   rsApiKey: string;
   /** ResourceSpace's resource type for photos ("Photo" is 1 on a stock install and on production). */
   rsPhotoResourceType: number;
+  /** ResourceSpace's resource type for videos ("Video" is 3 on a stock install and on production, #22). */
+  rsVideoResourceType: number;
   /** How long one ResourceSpace API call may take; the file upload includes preview generation. */
   rsApiTimeoutMs: number;
-  /** The largest photo accepted, in bytes (#18: 50 MB). */
-  photoMaxBytes: number;
+  /**
+   * The per-file and per-Submission limits (#18). The defaults are the
+   * decided values the page also shows (shared/media.ts); the environment can
+   * lower them, which the tests use.
+   */
+  limits: Limits;
 }
 
 type Env = Record<string, string | undefined>;
@@ -99,7 +106,14 @@ export function loadConfig(env: Env): Config {
     rsUser: (env.RS_UPLOADER_USER ?? "").trim() || "upload-service",
     rsApiKey: (env.RS_UPLOADER_API_KEY ?? "").trim(),
     rsPhotoResourceType: int(env, "RS_PHOTO_RESOURCE_TYPE", 1, 1, 1_000_000),
+    rsVideoResourceType: int(env, "RS_VIDEO_RESOURCE_TYPE", 3, 1, 1_000_000),
     rsApiTimeoutMs: int(env, "RS_API_TIMEOUT_MS", 120_000, 1, 600_000),
-    photoMaxBytes: int(env, "PHOTO_MAX_BYTES", 50 * 1024 * 1024, 1, 1024 * 1024 * 1024),
+    limits: {
+      photoMaxBytes: int(env, "PHOTO_MAX_BYTES", LIMITS.photoMaxBytes, 1, LIMITS.photoMaxBytes),
+      videoMaxBytes: int(env, "VIDEO_MAX_BYTES", LIMITS.videoMaxBytes, 1, LIMITS.videoMaxBytes),
+      maxItems: int(env, "SUBMISSION_MAX_ITEMS", LIMITS.maxItems, 1, LIMITS.maxItems),
+      maxVideos: int(env, "SUBMISSION_MAX_VIDEOS", LIMITS.maxVideos, 0, LIMITS.maxVideos),
+      maxTotalBytes: int(env, "SUBMISSION_MAX_BYTES", LIMITS.maxTotalBytes, 1, LIMITS.maxTotalBytes),
+    },
   };
 }

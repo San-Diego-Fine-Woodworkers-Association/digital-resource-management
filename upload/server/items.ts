@@ -1,5 +1,6 @@
 // Handing a fully arrived upload to ResourceSpace as one Item in Pending
-// Review (ADR 0002), with the Title and the six Submitter fields.
+// Review (ADR 0002), as a Photo or a Video by its content, with the Title and
+// the six Submitter fields.
 //
 // Idempotent (#30): the ResourceSpace ref is recorded next to the staged file
 // (`<upload id>.item.json`) as soon as the Item exists, and each later step is
@@ -11,13 +12,20 @@
 // The Submitter fields come only from the verified session and the server
 // itself. From the browser come just the Title, the rights tick, and the
 // device's file name (kept as Original Filename).
+//
+// Before anything reaches ResourceSpace, the file's content is checked
+// against the allowlist and the limits that depend on what it is (#18, #54):
+// a type we take, not too big for its kind, and room in its Submission for
+// another video. A refused file is deleted from staging at once.
 import { readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { checkFile, type MediaKind, type Refusal } from "../shared/media.ts";
 import type { Config } from "./config.ts";
-import { detectPhotoFile } from "./filetype.ts";
-import { fileName, newSubmissionId, originalFileName, rightsRecord } from "./naming.ts";
+import { detectFile } from "./filetype.ts";
+import { fileName, originalFileName, rightsRecord } from "./naming.ts";
 import type { ResourceSpace } from "./resourcespace.ts";
 import type { SessionUser } from "./session.ts";
+import type { Submissions } from "./submissions.ts";
 import { isUploadId, type Uploads } from "./uploads.ts";
 
 /** The longest Title accepted. ResourceSpace's title field holds far more; this only stops abuse. */
@@ -39,7 +47,7 @@ export type HandOffResult =
   | { outcome: "sent"; record: ItemRecord }
   | { outcome: "not_found" }
   | { outcome: "incomplete" }
-  | { outcome: "not_a_photo"; sizeBytes?: number }
+  | { outcome: "refused"; refusal: Refusal; sizeBytes?: number; detectedType?: string }
   | { outcome: "not_saved"; record?: ItemRecord; error: string };
 
 export interface ItemRecord {
@@ -49,6 +57,7 @@ export interface ItemRecord {
   rights: string;
   sizeBytes: number;
   detectedType: string;
+  kind: MediaKind;
   fileName: string;
   ref?: number;
   fileUploaded?: boolean;
@@ -61,9 +70,9 @@ export interface Items {
 
 export function createItems(
   config: Config,
-  deps: { uploads: Uploads; rs: ResourceSpace; now?: () => Date },
+  deps: { uploads: Uploads; submissions: Submissions; rs: ResourceSpace; now?: () => Date },
 ): Items {
-  const { uploads, rs } = deps;
+  const { uploads, submissions, rs } = deps;
   const now = deps.now ?? (() => new Date());
   const inFlight = new Map<string, Promise<HandOffResult>>();
 
@@ -94,27 +103,34 @@ export function createItems(
     if (upload.size === undefined || upload.offset !== upload.size) return { outcome: "incomplete" };
 
     if (!record) {
-      const type = await detectPhotoFile(upload.path);
-      if (!type) {
+      const type = await detectFile(upload.path);
+      const refusal =
+        checkFile(type, upload.size, config.limits) ??
+        (type && submissions.accept(upload.submissionId, upload.owner, upload.id, type.kind));
+      if (refusal === "not_found") return { outcome: "not_found" };
+      if (refusal || !type) {
         await uploads.remove(upload.id);
-        return { outcome: "not_a_photo", sizeBytes: upload.size };
+        submissions.release(upload.submissionId, upload.id);
+        return { outcome: "refused", refusal: refusal ?? "wrong_type", sizeBytes: upload.size, detectedType: type?.mime };
       }
-      const submissionId = newSubmissionId();
+      const { submissionId, itemNumber } = upload;
       record = {
         owner: user.id,
         submissionId,
         rights: rightsRecord(now()),
         sizeBytes: upload.size,
         detectedType: type.mime,
-        // One photo per Submission for now (#53), so it is Item 001. No Date
-        // field yet (#56), so the name has none.
-        fileName: fileName({ title: req.title, submissionId, itemNumber: 1, extension: type.extension }),
+        kind: type.kind,
+        // No Date field yet (#56), so the name has none.
+        fileName: fileName({ title: req.title, submissionId, itemNumber, extension: type.extension }),
       };
     }
 
     try {
       if (record.ref === undefined) {
-        record.ref = await rs.createPendingItem(config.rsPhotoResourceType);
+        record.ref = await rs.createPendingItem(
+          record.kind === "video" ? config.rsVideoResourceType : config.rsPhotoResourceType,
+        );
         await saveRecord(upload.id, record);
       }
       if (!record.fileUploaded) {

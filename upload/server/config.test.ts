@@ -15,7 +15,24 @@ describe("loadConfig", () => {
     expect(c.uploadsPaused).toBe(false);
     expect(c.rsUser).toBe("upload-service");
     expect(c.rsPhotoResourceType).toBe(1);
-    expect(c.photoMaxBytes).toBe(50 * 1024 * 1024);
+    expect(c.rsVideoResourceType).toBe(3);
+  });
+
+  it("has the decided limits (#18)", () => {
+    const MB = 1024 * 1024;
+    expect(loadConfig({}).limits).toEqual({
+      photoMaxBytes: 50 * MB,
+      videoMaxBytes: 1024 * MB,
+      maxItems: 50,
+      maxVideos: 10,
+      maxTotalBytes: 4 * 1024 * MB,
+    });
+  });
+
+  it("can lower a limit but never raise it above what the page tells members", () => {
+    expect(loadConfig({ SUBMISSION_MAX_ITEMS: "3" }).limits.maxItems).toBe(3);
+    expect(() => loadConfig({ SUBMISSION_MAX_ITEMS: "51" })).toThrow("SUBMISSION_MAX_ITEMS");
+    expect(() => loadConfig({ VIDEO_MAX_BYTES: String(2 * 1024 * 1024 * 1024) })).toThrow("VIDEO_MAX_BYTES");
   });
 
   // A missing secret must not stop the service (or the compose deploy): it
@@ -53,6 +70,9 @@ describe("loadConfig", () => {
     ["PORT", "abc"],
     ["RS_PHOTO_RESOURCE_TYPE", "photo"],
     ["PHOTO_MAX_BYTES", "-1"],
+    ["VIDEO_MAX_BYTES", "1.5"],
+    ["SUBMISSION_MAX_BYTES", "lots"],
+    ["RS_VIDEO_RESOURCE_TYPE", "video"],
   ])("refuses a bad %s", (key, value) => {
     expect(() => loadConfig({ [key]: value })).toThrow(key);
   });

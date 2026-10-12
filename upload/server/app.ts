@@ -3,8 +3,9 @@
 //   /upload, /upload/...   the page, gated on the SDFWA session
 //   /upload/assets/...     the built app's scripts and styles (public)
 //   /upload/api/...        the narrow API; session re-checked on every call
-//     /files, /files/<id>  tus: the photo arrives in chunks (uploads.ts)
-//     POST /items          hand an arrived photo to ResourceSpace (items.ts)
+//     POST /submissions    start a Submission: its id goes on every upload (submissions.ts)
+//     /files, /files/<id>  tus: each photo or video arrives in chunks (uploads.ts)
+//     POST /items          hand an arrived one to ResourceSpace (items.ts)
 //     GET /session         who is signed in
 //   /upload/health         staging usage and ResourceSpace reachability
 //
@@ -20,7 +21,8 @@ import { checkHealth } from "./health.ts";
 import { createItems, MAX_TITLE, type HandOffRequest } from "./items.ts";
 import { createResourceSpace } from "./resourcespace.ts";
 import { checkSession, displayName, isEntitled, type Session, type SessionUser } from "./session.ts";
-import { createUploads, FILES_PATH } from "./uploads.ts";
+import { createSubmissions } from "./submissions.ts";
+import { createUploads, FILES_PATH, REFUSAL_STATUS } from "./uploads.ts";
 
 export interface ServiceOptions {
   auditSink?: AuditSink;
@@ -139,8 +141,9 @@ function scriptSafeJson(value: unknown): string {
 export function createService(config: Config, options: ServiceOptions = {}): http.Server {
   const audit = createAuditLog(options.auditSink ?? stdoutSink);
   const rsConfigured = config.rsApiKey !== "";
-  const uploads = createUploads(config);
-  const items = createItems(config, { uploads, rs: createResourceSpace(config) });
+  const submissions = createSubmissions(config.limits);
+  const uploads = createUploads(config, submissions);
+  const items = createItems(config, { uploads, submissions, rs: createResourceSpace(config) });
   const log =
     options.log ??
     ((message: string, fields: Record<string, unknown> = {}) =>
@@ -260,7 +263,8 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
 
     const isFiles = url.pathname === FILES_PATH || url.pathname.startsWith(`${FILES_PATH}/`);
     const isItems = route === "/items";
-    if ((isFiles || isItems) && !rsConfigured) {
+    const isSubmissions = route === "/submissions";
+    if ((isFiles || isItems || isSubmissions) && !rsConfigured) {
       log("refusing uploads: RS_UPLOADER_API_KEY is not set");
       return answer(503, { error: "unavailable" }, "not_configured", s.user, { "Retry-After": "300" });
     }
@@ -273,6 +277,7 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
       return;
     }
     if (isItems && method === "POST") return handOff(req, s.user, answer);
+    if (isSubmissions && method === "POST") return startSubmission(req, s.user, answer);
     return answer(404, { error: "not_found" }, "not_found", s.user);
   }
 
@@ -284,6 +289,18 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
     headers?: Record<string, string>,
     extra?: Partial<AuditEvent>,
   ) => void;
+
+  /** Nothing in the body is used; it must be JSON only so other sites cannot start one. */
+  async function startSubmission(req: http.IncomingMessage, user: SessionUser, answer: Answer) {
+    try {
+      await readJson(req);
+    } catch (err) {
+      const status = err instanceof BodyError ? err.status : 400;
+      return answer(status, { error: "invalid" }, "invalid", user);
+    }
+    const submissionId = submissions.create(user);
+    return answer(201, { submissionId }, "submission_started", user, {}, { submissionId });
+  }
 
   async function handOff(req: http.IncomingMessage, user: SessionUser, answer: Answer) {
     let body: unknown;
@@ -313,8 +330,12 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
         return answer(404, { error: "not_found" }, "not_found", user, {}, { uploadId });
       case "incomplete":
         return answer(409, { error: "incomplete" }, "incomplete", user, {}, { uploadId });
-      case "not_a_photo":
-        return answer(415, { error: "not_a_photo" }, "not_a_photo", user, {}, { uploadId, sizeBytes: result.sizeBytes });
+      case "refused":
+        return answer(REFUSAL_STATUS[result.refusal], { error: result.refusal }, result.refusal, user, {}, {
+          uploadId,
+          sizeBytes: result.sizeBytes,
+          detectedType: result.detectedType,
+        });
       case "not_saved":
         log("could not save to ResourceSpace", { uploadId, ref: result.record?.ref, error: result.error });
         return answer(502, { error: "not_saved" }, "not_saved", user, {}, {
