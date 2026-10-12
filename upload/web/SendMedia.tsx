@@ -191,7 +191,7 @@ export function SendMedia({ sender }: { sender: Sender }) {
           <p className="text-lg">{copy.choose.intro}</p>
           <FilePickerButton
             variant={chosen.length ? "secondary" : "primary"}
-            size="large"
+           
             className="w-full"
             acceptedFileTypes={ACCEPTED}
             allowsMultiple
@@ -216,7 +216,7 @@ export function SendMedia({ sender }: { sender: Sender }) {
                 <p className="text-base text-muted-foreground">{copy.choose.howTo}</p>
               </div>
               <Gallery items={chosen} onRemove={remove} />
-              <Button variant="primary" size="large" className="w-full" onPress={() => go("describe")}>
+              <Button variant="primary" className="w-full" onPress={() => go("describe")}>
                 {copy.choose.next}
               </Button>
             </>
@@ -306,12 +306,12 @@ function ItemRow({
         {/* Still moving while ResourceSpace makes a video's previews, so it never looks stuck (#55). */}
         {state.status === "finishing" && <ProgressBar isIndeterminate aria-label={item.file.name} />}
         {state.status === "failed" && (
-          <Button variant="primary" size="large" className="w-full" onPress={onTryAgain}>
+          <Button variant="primary" className="w-full" onPress={onTryAgain}>
             {copy.sending.tryAgain}
           </Button>
         )}
         {state.status === "refused" && (
-          <Button variant="secondary" size="large" className="w-full" onPress={onRemove}>
+          <Button variant="secondary" className="w-full" onPress={onRemove}>
             {copy.sending.remove}
           </Button>
         )}
@@ -333,7 +333,7 @@ function Done({ photos, videos, onMore }: { photos: number; videos: number; onMo
       </h2>
       <p className="text-lg">{copy.done.next}</p>
       <p className="text-lg">{copy.done.nothingElse}</p>
-      <Button variant="secondary" size="large" className="w-full" onPress={onMore}>
+      <Button variant="secondary" className="w-full" onPress={onMore}>
         {copy.done.more}
       </Button>
     </section>

@@ -34,14 +34,6 @@ const NEEDED: Partial<Record<DetailField, string>> = {
 /** The Select item that empties the optional place again (never sent; only its key). */
 const NONE = "--leave-empty--";
 
-// Touch targets of at least 48 px and 18 px text (#31). The design system's
-// Select and CheckboxGroup take a class only on their outer element, so their
-// label and trigger are reached from there.
-const LABEL = "text-base";
-const SELECT = "[&>:first-child]:text-base [&_button]:min-h-12 [&_button]:text-base [&_[slot=errorMessage]]:text-sm";
-const ITEM = "min-h-12 text-base";
-const BOX = "min-h-12 gap-3 text-base";
-
 export function Describe({
   count,
   details,
@@ -86,9 +78,9 @@ export function Describe({
       </p>
 
       <TextField value={details.title} onChange={(title) => set({ title })} isRequired className="flex flex-col gap-1">
-        <Label className={LABEL}>{copy.describe.title}</Label>
-        <Input className="min-h-12 text-base" maxLength={MAX_LENGTH.title} />
-        <Description className="text-sm text-muted-foreground">{copy.describe.titleHint}</Description>
+        <Label>{copy.describe.title}</Label>
+        <Input maxLength={MAX_LENGTH.title} />
+        <Description>{copy.describe.titleHint}</Description>
       </TextField>
 
       {options.status === "loading" && (
@@ -101,7 +93,7 @@ export function Describe({
           variant="warning"
           title={copy.describe.choicesFailed}
           actions={
-            <Button variant="secondary" size="large" className="w-full" onPress={onRetryOptions}>
+            <Button variant="secondary" className="w-full" onPress={onRetryOptions}>
               {copy.describe.tryAgain}
             </Button>
           }
@@ -117,10 +109,10 @@ export function Describe({
             onChange={(key) => set({ programevent: key == null ? "" : String(key) })}
             isInvalid={gone.includes("programevent")}
             errorMessage={copy.describe.noLongerOffered}
-            className={SELECT}
+           
           >
             {live.programevent.map((name) => (
-              <SelectItem key={name} id={name} className={ITEM}>
+              <SelectItem key={name} id={name}>
                 {name}
               </SelectItem>
             ))}
@@ -132,10 +124,9 @@ export function Describe({
             onChange={(subjecttype) => set({ subjecttype })}
             isInvalid={gone.includes("subjecttype")}
             errorMessage={copy.describe.noLongerOffered}
-            className="[&>:first-child]:text-base [&_[slot=errorMessage]]:text-sm"
           >
             {live.subjecttype.map((name) => (
-              <Checkbox key={name} value={name} className={BOX}>
+              <Checkbox key={name} value={name}>
                 {name}
               </Checkbox>
             ))}
@@ -144,10 +135,10 @@ export function Describe({
       )}
 
       <TextField value={details.date} onChange={(date) => set({ date })} className="flex flex-col gap-1">
-        <Label className={LABEL}>{copy.describe.date}</Label>
+        <Label>{copy.describe.date}</Label>
         {/* The phone's own date picker; it gives YYYY-MM-DD, or nothing. */}
-        <Input type="date" className="min-h-12 text-base" />
-        <Description className="text-sm text-muted-foreground">{copy.describe.dateHint}</Description>
+        <Input type="date" />
+        <Description>{copy.describe.dateHint}</Description>
       </TextField>
 
       {live && (
@@ -158,18 +149,18 @@ export function Describe({
           onChange={(key) => set({ location: key == null || key === NONE ? "" : String(key) })}
           isInvalid={gone.includes("location")}
           errorMessage={copy.describe.noLongerOffered}
-          className={SELECT}
+         
         >
           {[
             ...(details.location
               ? [
-                  <SelectItem key={NONE} id={NONE} className={ITEM}>
+                  <SelectItem key={NONE} id={NONE}>
                     {copy.describe.leaveEmpty}
                   </SelectItem>,
                 ]
               : []),
             ...live.location.map((name) => (
-              <SelectItem key={name} id={name} className={ITEM}>
+              <SelectItem key={name} id={name}>
                 {name}
               </SelectItem>
             )),
@@ -178,16 +169,16 @@ export function Describe({
       )}
 
       <TextField value={details.eventname} onChange={(eventname) => set({ eventname })} className="flex flex-col gap-1">
-        <Label className={LABEL}>{copy.describe.eventName}</Label>
-        <Input className="min-h-12 text-base" maxLength={MAX_LENGTH.eventname} />
+        <Label>{copy.describe.eventName}</Label>
+        <Input maxLength={MAX_LENGTH.eventname} />
       </TextField>
 
       <TextField value={details.caption} onChange={(caption) => set({ caption })} className="flex flex-col gap-1">
-        <Label className={LABEL}>{copy.describe.caption}</Label>
-        <TextArea className="min-h-32 text-base" maxLength={MAX_LENGTH.caption} />
+        <Label>{copy.describe.caption}</Label>
+        <TextArea maxLength={MAX_LENGTH.caption} />
       </TextField>
 
-      <Checkbox isSelected={rights} onChange={onRights} isRequired className={BOX}>
+      <Checkbox isSelected={rights} onChange={onRights} isRequired>
         {copy.describe.rights}
       </Checkbox>
 
@@ -204,7 +195,7 @@ export function Describe({
       {needed.length > 0 && <p className="text-base font-medium">{copy.describe.stillNeeded(needed)}</p>}
       <Button
         variant="primary"
-        size="large"
+       
         className="w-full"
         isDisabled={needed.length > 0 || !live || busy}
         onPress={onSend}
