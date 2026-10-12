@@ -71,6 +71,7 @@ export function createResourceSpace(config: Config): ResourceSpace {
     method: "GET" | "POST",
     headers: Record<string, string | number> = {},
     write?: (req: http.ClientRequest) => void,
+    timeoutMs = config.rsApiTimeoutMs,
   ): Promise<RawResponse> {
     return new Promise((resolve, reject) => {
       const req = client.request(url, {
@@ -81,7 +82,9 @@ export function createResourceSpace(config: Config): ResourceSpace {
           accept: "application/json",
           ...headers,
         },
-        timeout: config.rsApiTimeoutMs,
+        // How long the socket may sit idle: sending the file keeps it busy,
+        // so for the upload this is the wait for ResourceSpace's previews.
+        timeout: timeoutMs,
       });
       req.on("response", (res) => {
         let body = "";
@@ -155,6 +158,9 @@ export function createResourceSpace(config: Config): ResourceSpace {
           file.on("end", () => req.end(tail));
           file.pipe(req, { end: false });
         },
+        // A 1 GB video goes over the Docker network in seconds; ResourceSpace
+        // answers only after making its previews, which takes minutes (#55).
+        config.rsUploadTimeoutMs,
       );
       // 204 is the only success; failures come back with other codes and a FAILED body.
       if (res.status !== 204) throw new ResourceSpaceError(fn, `status ${res.status}: ${excerpt(res.body)}`, res.status);

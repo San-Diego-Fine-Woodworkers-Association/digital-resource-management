@@ -13,6 +13,11 @@
 // itself. From the browser come just the Title, the rights tick, and the
 // device's file name (kept as Original Filename).
 //
+// A big video takes ResourceSpace minutes to take in (it makes the previews
+// before it answers), so a hand-off runs to the end whoever is still
+// waiting: the page's request may stop waiting, and `status` says where it
+// has got to (#55). Only one runs per upload at a time.
+//
 // Before anything reaches ResourceSpace, the file's content is checked
 // against the allowlist and the limits that depend on what it is (#18, #54):
 // a type we take, not too big for its kind, and room in its Submission for
@@ -64,9 +69,28 @@ export interface ItemRecord {
   sent?: boolean;
 }
 
+/** Where an Item is, for the page to poll while it shows Finishing up (#55). */
+export type ItemStatus =
+  /** Being handed to ResourceSpace now. */
+  | { status: "finishing" }
+  | { status: "sent" }
+  /** The last hand-off did not finish; asking again picks up where it stopped. */
+  | { status: "not_saved" }
+  | { status: "refused"; refusal: Refusal }
+  /** Fully arrived, and not handed over yet. */
+  | { status: "arrived" }
+  /** Still arriving. */
+  | { status: "incomplete" }
+  | { status: "not_found" };
+
 export interface Items {
   handOff(req: HandOffRequest, submitter: Submitter): Promise<HandOffResult>;
+  /** Where this member's upload is. Never starts anything. */
+  status(uploadId: string, user: SessionUser): Promise<ItemStatus>;
 }
+
+/** How long the outcome of a hand-off that did not end in "sent" is remembered. Matches the staging sweep (#23). */
+const REMEMBER_FOR_MS = 24 * 60 * 60 * 1000;
 
 export function createItems(
   config: Config,
@@ -74,7 +98,19 @@ export function createItems(
 ): Items {
   const { uploads, submissions, rs } = deps;
   const now = deps.now ?? (() => new Date());
+  // By member and upload id: only the owner's hand-off ever does anything,
+  // so nobody else's request can make it look busy or failed.
   const inFlight = new Map<string, Promise<HandOffResult>>();
+  /** The last hand-off of each upload that did not end in "sent" (a refused file leaves nothing on disk). */
+  const outcomes = new Map<string, { result: HandOffResult; at: number }>();
+  const keyOf = (uploadId: string, user: SessionUser) => `${user.id} ${uploadId}`;
+
+  function remember(key: string, result: HandOffResult) {
+    const cutoff = now().getTime() - REMEMBER_FOR_MS;
+    for (const [k, o] of outcomes) if (o.at < cutoff) outcomes.delete(k);
+    if (result.outcome === "sent") outcomes.delete(key);
+    else outcomes.set(key, { result, at: now().getTime() });
+  }
 
   const recordPath = (id: string) => path.join(config.stagingDir, `${id}.item.json`);
 
@@ -165,14 +201,35 @@ export function createItems(
       if (!isUploadId(req.uploadId)) return Promise.resolve({ outcome: "not_found" });
       // One hand-off per upload at a time: a second request waits for the
       // first and then answers from its record.
-      const previous = inFlight.get(req.uploadId) ?? Promise.resolve(undefined);
+      const key = keyOf(req.uploadId, submitter.user);
+      const previous = inFlight.get(key) ?? Promise.resolve(undefined);
       const next = previous.catch(() => undefined).then(() => run(req, submitter));
-      inFlight.set(req.uploadId, next);
-      const done = () => {
-        if (inFlight.get(req.uploadId) === next) inFlight.delete(req.uploadId);
+      inFlight.set(key, next);
+      const done = (result: HandOffResult) => {
+        if (inFlight.get(key) !== next) return;
+        inFlight.delete(key);
+        remember(key, result);
       };
-      next.then(done, done);
+      next.then(done, (err: unknown) => done({ outcome: "not_saved", error: err instanceof Error ? err.message : String(err) }));
       return next;
+    },
+
+    async status(uploadId, user) {
+      if (!isUploadId(uploadId)) return { status: "not_found" };
+      const key = keyOf(uploadId, user);
+      if (inFlight.has(key)) return { status: "finishing" };
+      const record = await readRecord(uploadId);
+      if (record && record.owner !== user.id) return { status: "not_found" };
+      if (record?.sent) return { status: "sent" };
+      const last = outcomes.get(key)?.result;
+      if (last?.outcome === "refused") return { status: "refused", refusal: last.refusal };
+      // A record without "sent" is a hand-off that stopped partway, perhaps
+      // before a restart.
+      if (last?.outcome === "not_saved" || record) return { status: "not_saved" };
+      const upload = await uploads.find(uploadId, user);
+      if (!upload) return { status: "not_found" };
+      if (upload.size === undefined || upload.offset !== upload.size) return { status: "incomplete" };
+      return { status: "arrived" };
     },
   };
 }

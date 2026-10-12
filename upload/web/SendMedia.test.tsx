@@ -483,6 +483,39 @@ describe("sending", () => {
     expect(status).toHaveTextContent("Finishing up…");
   });
 
+  it("shows a big video Sending, then Finishing up until ResourceSpace has it, then Sent (#55)", async () => {
+    const user = userEvent.setup();
+    const { sender, calls } = fakeSender();
+    render(<App boot={boot} sender={sender} />);
+    await pick(user, [video("IMG_2043.MOV", 900 * MB), photo("IMG_4821.JPG")]);
+    await describeAndSend(user);
+    const row = (name: string) => screen.getByText(name).closest("li")!;
+    const bar = (name: string) => within(row(name)).queryByRole("progressbar");
+
+    act(() => calls[0]!.events.onProgress(73));
+    expect(within(row("IMG_2043.MOV")).getByRole("status")).toHaveTextContent("Sending…");
+    expect(bar("IMG_2043.MOV")).toHaveAttribute("aria-valuenow", "73");
+
+    // All of it has arrived; ResourceSpace is making its previews.
+    act(() => calls[0]!.events.onFinishing());
+    expect(within(row("IMG_2043.MOV")).getByRole("status")).toHaveTextContent(
+      "Finishing up… (videos can take a few minutes)",
+    );
+    // Still moving, with no number that could look stuck.
+    expect(bar("IMG_2043.MOV")).not.toHaveAttribute("aria-valuenow");
+
+    // A photo finishing up is not told about videos.
+    act(() => calls[1]!.events.onFinishing());
+    expect(within(row("IMG_4821.JPG")).getByRole("status")).toHaveTextContent(/^Finishing up…$/);
+    await act(async () => calls[1]!.finish({ ok: true }));
+    expect(within(row("IMG_4821.JPG")).getByRole("status")).toHaveTextContent("✓ Sent");
+    expect(within(row("IMG_2043.MOV")).getByRole("status")).toHaveTextContent("Finishing up…");
+    expect(screen.getByText("1 of 2 sent.")).toBeInTheDocument();
+
+    await act(async () => calls[0]!.finish({ ok: true }));
+    expect(screen.getByRole("heading", { name: "Thank you! We have your 1 photo and 1 video." })).toBeInTheDocument();
+  });
+
   it("never sends anything about who the member is: the service takes that from the sign-in", async () => {
     const user = userEvent.setup();
     const send = vi.fn<(file: File, details: SendDetails, events: SendEvents) => Promise<SendResult>>(

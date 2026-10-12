@@ -22,6 +22,8 @@ export interface FakeReply {
   body?: string;
   /** Never answer (to exercise timeouts). */
   hang?: boolean;
+  /** Answer only after this long (as ResourceSpace does while it makes a video's previews). */
+  delayMs?: number;
 }
 
 export interface SeenRequest {
@@ -57,6 +59,7 @@ async function startFake(initial: (req: SeenRequest) => FakeReply): Promise<Fake
     fake.seen.push(seen);
     const reply = fake.respond(seen);
     if (reply.hang) return;
+    if (reply.delayMs) await new Promise((resolve) => setTimeout(resolve, reply.delayMs));
     if (reply.json !== undefined) {
       res.writeHead(reply.status ?? 200, { "content-type": "application/json" });
       res.end(JSON.stringify(reply.json));
