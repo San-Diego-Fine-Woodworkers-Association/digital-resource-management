@@ -10,6 +10,16 @@ The proxy's configuration lists which ResourceSpace fields the form asks for (by
 
 ## Consequences
 
-An option removed in ResourceSpace between form load and submit is silently dropped by ResourceSpace; the read-back check is what catches it.
+An option that changes in ResourceSpace between form load and submit has to be caught by the proxy, not by ResourceSpace.
+
+**Corrected 2026-10-12 (#56).** The original text said a removed option is "silently dropped by ResourceSpace". Tested on RS 11.0 r29660, that holds only for a name the field no longer has (deleted or renamed). A **deactivated** option is not dropped:
+- plain `get_field_options` still lists it;
+- `update_field` saves it;
+- it reads back unchanged.
+
+The proxy therefore:
+- asks `get_field_options` with `nodeinfo` and offers only the choices whose `active` flag is set;
+- refuses a choice that isn't currently active when the Submission starts, re-fetching the list before refusing one the cache doesn't know;
+- in the read-back, checks the saved choices against a fresh active list as well as for presence, and rewrites what doesn't hold.
 
 Decided in: [Decide: Metadata model for Batch metadata, overrides, and required fields](https://github.com/San-Diego-Fine-Woodworkers-Association/digital-resource-management/issues/19).

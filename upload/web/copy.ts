@@ -106,22 +106,23 @@ export const copy = {
     caption: "Anything else we should know?",
     rights: RIGHTS_STATEMENT,
     stillNeeded: (fields: string[]) => `Still needed: ${fields.join(", ")}`,
-    // Not on #31: the names the Still-needed line uses. Needs a read-through.
+    // Not on #31: the names the Still-needed line uses. Approved in the #56 review.
     neededTitle: "What are these?",
     neededOccasion: "What was the occasion?",
     neededSubjects: "What's in them?",
     neededRights: "Permission to share",
     // Not on #31 (#56): the dropdowns' empty state and the way to empty the
-    // optional one again. Needs a read-through.
+    // optional one again. Approved in the #56 review.
     chooseOne: "Choose one",
     leaveEmpty: "Leave empty",
     // Not on #31 (#56): while the club's lists load, and when they can't.
-    // Needs a read-through.
+    // Approved in the #56 review.
     loadingChoices: "Getting the lists of choices…",
     choicesFailed: "We couldn't get the lists of choices just now.",
     tryAgain: "Try again",
     // Not on #31 (#56): a choice removed from the club's list after the page
-    // loaded, and Send failing before anything was sent. Needs a read-through.
+    // loaded, and Send failing before anything was sent. Approved in the #56
+    // review.
     noLongerOffered: "That choice is no longer on the list. Please choose again.",
     choiceGone: "One of your choices is no longer on the list. Please choose again.",
     startFailed: "We couldn't start sending. Please try again.",
