@@ -162,12 +162,20 @@ describe("at most 4 GB on staging at once, per member", () => {
   });
 });
 
-describe("at most 100 photos and videos in 24 hours, per member", () => {
+/** Takes an upload out, as the page's Remove does. */
+function takeOut(id: string) {
+  return fetch(`${h.url}/upload/api/files/${id}`, { method: "DELETE", headers: { cookie: COOKIE, "tus-resumable": "1.0.0" } });
+}
+
+/** Enough room in a Submission for every test below. */
+const ROOMY = { expectedItems: 20, details: ANSWERS, rightsConfirmed: true };
+
+describe("at most 100 photos and videos sent in 24 hours, per member", () => {
   it("refuses the next one with its own reason, and takes it again once the day has passed", async () => {
     h = await startHarness({ QUOTA_DAILY_ITEMS: "2" });
     h.auth.respond = member();
     const c = client(h);
-    for (let i = 0; i < 2; i++) await c.finish(await c.upload(jpeg()));
+    for (let i = 0; i < 2; i++) expect((await c.finish(await c.upload(jpeg()))).status).toBe(200);
     // Handing them over does not give the day back.
     const submission = await c.startSubmission();
 
@@ -193,14 +201,100 @@ describe("at most 100 photos and videos in 24 hours, per member", () => {
 
     await expect(c.upload(png(), { submission })).rejects.toThrow(/429.*too_many_today/);
   });
+
+  it("counts uploads under way, so starting many at once cannot go over", async () => {
+    h = await startHarness({ QUOTA_DAILY_ITEMS: "3" });
+    h.auth.respond = member();
+    const c = client(h);
+    const submission = await c.startSubmission(COOKIE, ROOMY);
+
+    const answers = await Promise.all(Array.from({ length: 6 }, () => c.create(submission, 100_000)));
+    const statuses = answers.map((r) => r.status).sort();
+    expect(statuses).toEqual([201, 201, 201, 429, 429, 429]);
+    const refused = answers.find((r) => r.status === 429)!;
+    // Nothing sent yet to leave the window: a day, at the earliest.
+    expect(await refusal(refused)).toMatchObject({ body: { error: "too_many_today" }, retryAfter: DAY_MS / 1000 });
+  });
+
+  it("does not count an upload the member took out", async () => {
+    h = await startHarness({ QUOTA_DAILY_ITEMS: "1" });
+    h.auth.respond = member();
+    const c = client(h);
+    const submission = await c.startSubmission(COOKIE, ROOMY);
+    const id = await c.upload(jpeg(), { submission });
+    expect((await c.create(submission, 100_000)).status).toBe(429);
+
+    expect((await takeOut(id)).status).toBe(204);
+
+    const next = await c.upload(jpeg(), { submission });
+    expect((await c.finish(next)).status).toBe(200);
+    expect((await c.create(submission, 100_000)).status).toBe(429);
+  });
+
+  it("does not count a hand-off that failed: kept while it can be tried again, given back once it is gone", async () => {
+    h = await startHarness({ QUOTA_DAILY_ITEMS: "1" });
+    h.auth.respond = member();
+    const c = client(h);
+    const submission = await c.startSubmission(COOKIE, ROOMY);
+    h.fakeRs.failWhen = (call) => (call.fn === "upload_multipart" ? { status: 500, body: "boom" } : undefined);
+
+    const id = await c.upload(jpeg(), { submission });
+    expect((await c.finish(id)).status).toBe(502);
+    // Still on staging and can be tried again, so it still holds its place.
+    expect((await c.create(submission, 100_000)).status).toBe(429);
+
+    expect((await takeOut(id)).status).toBe(204);
+    h.fakeRs.failWhen = () => undefined;
+    expect((await c.finish(await c.upload(jpeg(), { submission }))).status).toBe(200);
+  });
+
+  it("counts a hand-off that failed and was then tried again once, when it is sent", async () => {
+    h = await startHarness({ QUOTA_DAILY_ITEMS: "2" });
+    h.auth.respond = member();
+    const c = client(h);
+    const submission = await c.startSubmission(COOKIE, ROOMY);
+    h.fakeRs.failWhen = (call) => (call.fn === "upload_multipart" ? { status: 500, body: "boom" } : undefined);
+    const id = await c.upload(jpeg(), { submission });
+    expect((await c.finish(id)).status).toBe(502);
+    h.fakeRs.failWhen = () => undefined;
+    expect((await c.finish(id)).status).toBe(200);
+
+    expect((await c.create(submission, 100_000)).status).toBe(201);
+    expect((await c.create(submission, 100_000)).status).toBe(429);
+  });
+
+  it("does not count a file refused at the hand-off", async () => {
+    h = await startHarness({ QUOTA_DAILY_ITEMS: "1" });
+    h.auth.respond = member();
+    const c = client(h);
+    const submission = await c.startSubmission(COOKIE, ROOMY);
+    const id = await c.upload(Buffer.from("#!/bin/sh\necho not a photo\n".repeat(100)), { submission });
+    expect((await c.finish(id)).status).toBe(415);
+
+    expect((await c.create(submission, 100_000)).status).toBe(201);
+  });
+
+  it("does not count an upload the sweep removed", async () => {
+    h = await startHarness({ QUOTA_DAILY_ITEMS: "1" });
+    h.auth.respond = member();
+    const c = client(h);
+    const submission = await c.startSubmission(COOKIE, ROOMY);
+    await create(submission, 100_000);
+    expect((await c.create(submission, 100_000)).status).toBe(429);
+
+    h.advance(DAY_MS + 60_000);
+    await h.sweep();
+    const next = await c.startSubmission(COOKIE, ROOMY);
+    expect((await c.create(next, 100_000)).status).toBe(201);
+  });
 });
 
-describe("at most 10 GB in 24 hours, per member", () => {
+describe("at most 10 GB sent in 24 hours, per member", () => {
   it("refuses an upload that would go over, and takes it once the day has passed", async () => {
     h = await startHarness({ QUOTA_DAILY_BYTES: "250000" });
     h.auth.respond = member();
     const c = client(h);
-    await c.finish(await c.upload(jpeg(200_000)));
+    expect((await c.finish(await c.upload(jpeg(200_000)))).status).toBe(200);
     const submission = await c.startSubmission();
 
     expect(await refusal(await c.create(submission, 100_000))).toMatchObject({ status: 429, body: { error: "too_much_today" } });
@@ -211,19 +305,42 @@ describe("at most 10 GB in 24 hours, per member", () => {
     expect((await c.create(submission, 100_000)).status).toBe(201);
   });
 
-  it("gives back what never arrived of an upload the member took out", async () => {
+  it("counts uploads under way at their full size, so starting many at once cannot go over", async () => {
     h = await startHarness({ QUOTA_DAILY_BYTES: "250000" });
     h.auth.respond = member();
-    const submission = await client(h).startSubmission(COOKIE, { expectedItems: 2, details: ANSWERS, rightsConfirmed: true });
+    const c = client(h);
+    const submission = await c.startSubmission(COOKIE, ROOMY);
+
+    const answers = await Promise.all(Array.from({ length: 4 }, () => c.create(submission, 100_000)));
+    expect(answers.map((r) => r.status).sort()).toEqual([201, 201, 429, 429]);
+    expect((await refusal(answers.find((r) => r.status === 429)!)).body).toEqual({ error: "too_much_today" });
+  });
+
+  it("gives back all of an upload the member took out, whatever had arrived", async () => {
+    h = await startHarness({ QUOTA_DAILY_BYTES: "250000" });
+    h.auth.respond = member();
+    const submission = await client(h).startSubmission(COOKIE, ROOMY);
     const id = await create(submission, 200_000);
     await patch(id, 0, mp4(200_000).subarray(0, 20_000));
     expect((await client(h).create(submission, 100_000)).status).toBe(429);
 
-    const del = await fetch(`${h.url}/upload/api/files/${id}`, { method: "DELETE", headers: { cookie: COOKIE, "tus-resumable": "1.0.0" } });
-    expect(del.status).toBe(204);
+    expect((await takeOut(id)).status).toBe(204);
 
-    // 20 000 of the day are used; 100 000 more fit.
-    expect((await client(h).create(submission, 100_000)).status).toBe(201);
+    expect((await client(h).create(submission, 240_000)).status).toBe(201);
+  });
+
+  it("does not count a hand-off that failed, once it is gone", async () => {
+    h = await startHarness({ QUOTA_DAILY_BYTES: "250000" });
+    h.auth.respond = member();
+    const c = client(h);
+    const submission = await c.startSubmission(COOKIE, ROOMY);
+    h.fakeRs.failWhen = (call) => (call.fn === "create_resource" ? { status: 500, body: "boom" } : undefined);
+    const id = await c.upload(jpeg(200_000), { submission });
+    expect((await c.finish(id)).status).toBe(502);
+    expect((await c.create(submission, 100_000)).status).toBe(429);
+
+    expect((await takeOut(id)).status).toBe(204);
+    expect((await c.create(submission, 240_000)).status).toBe(201);
   });
 });
 

@@ -42,8 +42,8 @@ function refusalReason(refusal: Refusal, kind: MediaKind | undefined, size: numb
     case "too_much_in_all":
       return "That's as much as we can take at once (4 GB in all). Send this one next time.";
     // Not on #31 (#60): a member's daily quotas, 100 photos and videos or
-    // 10 GB in 24 hours. In the same pattern, without the numbers (they can
-    // be tuned). Needs a read-through.
+    // 10 GB sent in 24 hours. In the same pattern, without the numbers (they
+    // can be tuned). Approved in the #60 review.
     case "too_many_today":
       return "That's the most we can take from you in one day. Please send this one tomorrow.";
     case "too_much_today":
@@ -175,7 +175,7 @@ export const copy = {
     // Not on #31 as an Item line (#60): the service is full or not answering,
     // or the member has as much going as they may. #31's "We're busy right
     // now. We'll keep trying for a few minutes." needs the automatic retries
-    // (#59); until then the member tries again. Needs a read-through.
+    // (#59); until then the member tries again. Approved in the #60 review.
     busy: "We're busy right now. Please try again in a few minutes.",
   },
 

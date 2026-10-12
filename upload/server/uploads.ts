@@ -58,8 +58,12 @@ export interface Uploads {
   handle(req: http.IncomingMessage, res: http.ServerResponse, user: SessionUser): Promise<{ createdId?: string; refusal?: string }>;
   /** The upload with this id if it exists and belongs to this member. */
   find(id: string, user: SessionUser): Promise<UploadInfo | undefined>;
-  /** Deletes the staged bytes and tus's record of them. */
-  remove(id: string): Promise<void>;
+  /**
+   * Deletes the staged bytes and tus's record of them. `sent` when the Item
+   * reached ResourceSpace: it then counts towards the member's day; otherwise
+   * its place in the day is given back.
+   */
+  remove(id: string, outcome?: { sent: boolean }): Promise<void>;
 }
 
 /** How each refusal is answered, here and on the hand-off (app.ts). */
@@ -263,8 +267,9 @@ export function createUploads(
       return { createdId: res.statusCode === 201 ? created.get(req) : undefined, refusal: refusals.get(req) };
     },
     find,
-    async remove(id) {
+    async remove(id, outcome) {
       if (!isUploadId(id)) return;
+      if (outcome?.sent) quotas.sent(id);
       try {
         await store.remove(id);
       } catch {

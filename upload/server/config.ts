@@ -70,9 +70,9 @@ export interface Quotas {
   uploadsAtOnce: number;
   /** Bytes on the staging volume at once: one Submission's worth. */
   stagedBytes: number;
-  /** Items started in any 24 hours. */
+  /** Items sent to ResourceSpace in any 24 hours (uploads under way hold their place). */
   dailyItems: number;
-  /** Bytes started in any 24 hours. */
+  /** Bytes sent to ResourceSpace in any 24 hours (uploads under way hold their place). */
   dailyBytes: number;
   /** Submissions started in any 24 hours: each leaves a small record on staging until the sweep. */
   dailySubmissions: number;

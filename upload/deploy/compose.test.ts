@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { loadConfig, type Config } from "../server/config.ts";
 
 const root = path.resolve(import.meta.dirname, "..", "..");
 const compose = parse(readFileSync(path.join(root, "docker-compose.yaml"), "utf8")) as {
@@ -86,6 +87,44 @@ describe("the upload container", () => {
   it("requires no environment variable to be set", () => {
     const env = (upload.environment as string[]).join("\n");
     expect(env).not.toContain(":?");
+  });
+
+  // So they can be tuned from Dokploy's Environment tab (#60).
+  describe("passes through the protection tuning", () => {
+    const TUNING = [
+      "QUOTA_UPLOADS_AT_ONCE",
+      "QUOTA_STAGED_BYTES",
+      "QUOTA_DAILY_ITEMS",
+      "QUOTA_DAILY_BYTES",
+      "QUOTA_DAILY_SUBMISSIONS",
+      "STAGING_CAP_PERCENT",
+      "RATE_USER_PER_MINUTE",
+      "RATE_USER_BURST",
+      "RATE_IP_PER_MINUTE",
+      "RATE_IP_BURST",
+    ];
+    /** Each variable's default, as compose would fill it in with nothing set in Dokploy. */
+    const defaults = Object.fromEntries(
+      (upload.environment as string[]).flatMap((line) => {
+        const m = /^(\w+)=\$\{(\w+):-([^}]*)\}$/.exec(line);
+        return m && m[1] === m[2] && TUNING.includes(m[1]!) ? [[m[1]!, m[3]!]] : [];
+      }),
+    );
+    const decided = loadConfig({});
+    const pick = (c: Config) => ({ quotas: c.quotas, rateLimits: c.rateLimits, stagingCapPercent: c.stagingCapPercent });
+
+    it("each one, under its own name", () => {
+      expect(Object.keys(defaults).sort()).toEqual([...TUNING].sort());
+    });
+
+    it("with the decided values as defaults", () => {
+      expect(pick(loadConfig(defaults))).toEqual(pick(decided));
+    });
+
+    it("and an empty value falls back to them", () => {
+      const empty = Object.fromEntries(TUNING.map((k) => [k, ""]));
+      expect(pick(loadConfig(empty))).toEqual(pick(decided));
+    });
   });
 });
 
