@@ -1,12 +1,14 @@
 // Seam 2: the page flow, with the service's API faked behind the Sender
 // interface. Choosing many photos and videos at once, the gallery and the
-// limits (#54); then Title, rights, Send and thank-you (#53).
+// limits (#54); describing them all in Step 2 (#56); then Send and
+// thank-you (#53).
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { Boot } from "../shared/boot.ts";
+import type { Options } from "../shared/details.ts";
 import { App } from "./App.tsx";
-import type { SendDetails, SendEvents, SendResult, Sender } from "./send.ts";
+import type { BeginResult, OptionsResult, SendEvents, SendResult, Sender, Start } from "./send.ts";
 
 const boot: Boot = {
   screen: "app",
@@ -14,31 +16,49 @@ const boot: Boot = {
   signOutUrl: "https://auth.example.org/logout",
 };
 
+/** The club's lists as the fake service gives them; deliberately not production's, so nothing can be hard-coded. */
+const OPTIONS: Options = {
+  programevent: ["Classes & Workshops", "Old Tool Swap Meet", "Toy Drive"],
+  subjecttype: ["Finished Piece", "Work in Progress", "Tool or Equipment"],
+  location: ["Shop", "Swap Meet"],
+};
+
 interface Call {
   /** Which Submission (1, 2, ...) it was sent in. */
   submission: number;
   file: File;
-  details: SendDetails;
   events: SendEvents;
   finish: (result: SendResult) => void;
 }
 
-/** A fake service: each send waits until the test decides how it ends. */
-function fakeSender() {
+/**
+ * A fake service: the lists load at once (unless `options` says otherwise),
+ * each Submission starts as asked (or as `beginResults` says, in turn), and
+ * each send waits until the test decides how it ends.
+ */
+function fakeSender(opts: { options?: () => Promise<OptionsResult>; beginResults?: BeginResult[] } = {}) {
   const calls: Call[] = [];
+  const starts: Start[] = [];
   let submissions = 0;
   const sender: Sender = {
-    begin: () => {
+    options: opts.options ?? (async () => ({ ok: true, options: OPTIONS })),
+    begin: async (start) => {
+      starts.push(start);
+      const planned = opts.beginResults?.shift();
+      if (planned) return planned;
       const submission = ++submissions;
       return {
-        send: (file, details, events) =>
-          new Promise((resolve) => {
-            calls.push({ submission, file, details, events, finish: resolve });
-          }),
+        ok: true,
+        submission: {
+          send: (file, events) =>
+            new Promise((resolve) => {
+              calls.push({ submission, file, events, finish: resolve });
+            }),
+        },
       };
     },
   };
-  return { sender, calls, submissions: () => submissions };
+  return { sender, calls, starts, submissions: () => submissions };
 }
 
 const MB = 1024 * 1024;
@@ -73,11 +93,30 @@ async function pick(user: User, files: File[]) {
 
 const tiles = () => screen.queryAllByRole("button", { name: /^See .* bigger$/ });
 
+const titleBox = () => screen.getByRole("textbox", { name: /What are these\?/ });
+const rightsBox = () => screen.getByRole("checkbox", { name: /I took these, or I have permission to share them with SDFWA/ });
+const sendButton = () => screen.getByRole("button", { name: "Send them" });
+const stillNeeded = () => screen.queryByText(/^Still needed:/)?.textContent;
+
+/** Picks `option` in the dropdown labelled `label`, as a member would: open it, tap the choice. */
+async function choose(user: User, label: RegExp, option: string) {
+  await user.click(screen.getByRole("button", { name: label }));
+  await user.click(await screen.findByRole("option", { name: option }));
+}
+
+/** Answers the required questions and ticks the rights box. */
+async function fillRequired(user: User, title = "Dovetail class, May 3") {
+  await screen.findByRole("button", { name: /What was the occasion\?/ });
+  await user.type(titleBox(), title);
+  await choose(user, /What was the occasion\?/, "Classes & Workshops");
+  await user.click(screen.getByRole("checkbox", { name: "Finished Piece" }));
+  await user.click(rightsBox());
+}
+
 async function describeAndSend(user: User, title = "Dovetail class, May 3") {
   await user.click(screen.getByRole("button", { name: "Next" }));
-  await user.type(screen.getByRole("textbox", { name: /What are these\?/ }), title);
-  await user.click(screen.getByRole("checkbox", { name: /I took these, or I have permission to share them with SDFWA/ }));
-  await user.click(screen.getByRole("button", { name: "Send them" }));
+  await fillRequired(user, title);
+  await user.click(sendButton());
 }
 
 describe("choosing many photos and videos", () => {
@@ -290,10 +329,223 @@ describe("files that can't be added", () => {
   });
 });
 
-describe("sending", () => {
-  it("goes choose, Title, rights, Send, thank-you", async () => {
+describe("describing them (step 2)", () => {
+  async function toStep2(sender: Sender, files = [photo()]) {
     const user = userEvent.setup();
-    const { sender, calls } = fakeSender();
+    render(<App boot={boot} sender={sender} />);
+    await pick(user, files);
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    return user;
+  }
+
+  it("asks every question, marking the required ones and explaining the mark", async () => {
+    await toStep2(fakeSender().sender);
+    await screen.findByRole("button", { name: /What was the occasion\?/ });
+
+    expect(screen.getByText(/means you need to fill this in/)).toHaveTextContent("* means you need to fill this in");
+    // Required: the design system's Label shows its red * (hidden from screen
+    // readers, which hear "required") only inside a field marked required.
+    const field = (label: string) => screen.getByText(label).closest("[data-rac]");
+    expect(titleBox()).toBeRequired();
+    expect(field("What are these?")).toHaveAttribute("data-required");
+    expect(field("What was the occasion?")).toHaveAttribute("data-required");
+    const subjects = screen.getByRole("group", { name: /What's in them\? \(pick all that apply\)/ });
+    expect(subjects).toHaveAttribute("data-required");
+    // Until one is ticked, each box says the group needs an answer.
+    for (const box of within(subjects).getAllByRole("checkbox")) expect(box).toBeRequired();
+    expect(rightsBox()).toBeRequired();
+    // Optional: not marked.
+    for (const label of [
+      "When were they taken?",
+      "Where were they taken?",
+      "Name of the class or event, if there is one",
+      "Anything else we should know?",
+    ]) {
+      expect(field(label)).not.toHaveAttribute("data-required");
+    }
+    for (const name of ["Name of the class or event, if there is one", "Anything else we should know?"]) {
+      expect(screen.getByRole("textbox", { name })).not.toBeRequired();
+    }
+    expect(screen.getByText("For example: Dovetail class, May 3")).toBeInTheDocument();
+    expect(
+      screen.getByText("Leave empty if you're not sure. We'll use the date on the photo when we can."),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/When were they taken\?/)).toHaveAttribute("type", "date");
+    // The Caption is right there, not behind a fold-out.
+    expect(screen.getByRole("textbox", { name: "Anything else we should know?" }).tagName).toBe("TEXTAREA");
+  });
+
+  it("keeps Send disabled and says plainly what is still needed until every required answer is in", async () => {
+    const user = await toStep2(fakeSender().sender);
+    await screen.findByRole("button", { name: /What was the occasion\?/ });
+
+    expect(sendButton()).toBeDisabled();
+    expect(stillNeeded()).toBe("Still needed: What are these?, What was the occasion?, What's in them?, Permission to share");
+
+    // Spaces are not a Title.
+    await user.type(titleBox(), "   ");
+    expect(stillNeeded()).toMatch(/^Still needed: What are these\?/);
+    await user.type(titleBox(), "Swap meet");
+    expect(stillNeeded()).toBe("Still needed: What was the occasion?, What's in them?, Permission to share");
+
+    // Optional answers do not count.
+    await user.type(screen.getByRole("textbox", { name: "Anything else we should know?" }), "A good day.");
+    expect(stillNeeded()).toBe("Still needed: What was the occasion?, What's in them?, Permission to share");
+
+    await choose(user, /What was the occasion\?/, "Old Tool Swap Meet");
+    expect(stillNeeded()).toBe("Still needed: What's in them?, Permission to share");
+
+    await user.click(screen.getByRole("checkbox", { name: "Tool or Equipment" }));
+    expect(stillNeeded()).toBe("Still needed: Permission to share");
+    await user.click(screen.getByRole("checkbox", { name: "Tool or Equipment" }));
+    expect(stillNeeded()).toBe("Still needed: What's in them?, Permission to share");
+    await user.click(screen.getByRole("checkbox", { name: "Work in Progress" }));
+
+    expect(sendButton()).toBeDisabled();
+    await user.click(rightsBox());
+    expect(stillNeeded()).toBeUndefined();
+    expect(sendButton()).toBeEnabled();
+  });
+
+  it("offers the club's lists exactly as the service gives them", async () => {
+    const user = await toStep2(fakeSender().sender);
+
+    await user.click(await screen.findByRole("button", { name: /What was the occasion\?/ }));
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(OPTIONS.programevent);
+    await user.keyboard("{Escape}");
+    const subjects = screen.getByRole("group", { name: /What's in them\?/ });
+    expect(within(subjects).getAllByRole("checkbox").map((c) => c.closest("label")!.textContent)).toEqual(
+      OPTIONS.subjecttype,
+    );
+    await user.click(screen.getByRole("button", { name: /Where were they taken\?/ }));
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(OPTIONS.location);
+  });
+
+  it("says so while the lists load, and offers Try again when they can't be had", async () => {
+    let answer: (r: OptionsResult) => void = () => {};
+    const options = vi.fn(() => new Promise<OptionsResult>((resolve) => (answer = resolve)));
+    const user = await toStep2(fakeSender({ options }).sender);
+
+    expect(screen.getByText("Getting the lists of choices…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /What was the occasion\?/ })).not.toBeInTheDocument();
+    await act(async () => answer({ ok: false }));
+
+    expect(screen.getByText("We couldn't get the lists of choices just now.")).toBeInTheDocument();
+    await user.type(titleBox(), "Swap meet");
+    await user.click(rightsBox());
+    expect(sendButton()).toBeDisabled();
+    expect(stillNeeded()).toBe("Still needed: What was the occasion?, What's in them?");
+
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await act(async () => answer({ ok: true, options: OPTIONS }));
+
+    expect(options).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("button", { name: /What was the occasion\?/ })).toBeInTheDocument();
+    // What was typed is kept.
+    expect(titleBox()).toHaveValue("Swap meet");
+  });
+
+  it("starts the Submission with every answer, how many are coming, and the rights confirmation", async () => {
+    const { sender, starts } = fakeSender();
+    const user = await toStep2(sender, [photo("a.jpg"), video("b.mov")]);
+    expect(screen.getByText("This will apply to all 2 of them.")).toBeInTheDocument();
+    await fillRequired(user, "Design in Wood");
+    await user.click(screen.getByRole("checkbox", { name: "Work in Progress" }));
+    await user.type(screen.getByLabelText(/When were they taken\?/), "2026-05-03");
+    await choose(user, /Where were they taken\?/, "Shop");
+    await user.type(screen.getByRole("textbox", { name: "Name of the class or event, if there is one" }), "Hand tools");
+    await user.type(screen.getByRole("textbox", { name: "Anything else we should know?" }), "Line one{Enter}Line two");
+
+    await user.click(sendButton());
+
+    expect(starts).toEqual([
+      {
+        expectedItems: 2,
+        rightsConfirmed: true,
+        details: {
+          title: "Design in Wood",
+          programevent: "Classes & Workshops",
+          subjecttype: ["Finished Piece", "Work in Progress"],
+          date: "2026-05-03",
+          location: "Shop",
+          eventname: "Hand tools",
+          caption: "Line one\nLine two",
+        },
+      },
+    ]);
+  });
+
+  it("sends a blank date as blank: the photo's own date is kept", async () => {
+    const { sender, starts } = fakeSender();
+    const user = await toStep2(sender);
+    await fillRequired(user);
+
+    await user.click(sendButton());
+
+    expect(starts[0]!.details.date).toBe("");
+  });
+
+  it("lets the optional place be emptied again after one was picked", async () => {
+    const { sender, starts } = fakeSender();
+    const user = await toStep2(sender);
+    await fillRequired(user);
+    await choose(user, /Where were they taken\?/, "Swap Meet");
+
+    await choose(user, /Where were they taken\?/, "Leave empty");
+    await user.click(sendButton());
+
+    expect(starts[0]!.details.location).toBe("");
+  });
+
+  it("asks again for a choice taken off the club's list since the page loaded", async () => {
+    const now = { ...OPTIONS, programevent: ["Old Tool Swap Meet", "Toy Drive"] };
+    const { sender, starts, calls } = fakeSender({
+      beginResults: [{ ok: false, reason: "invalid", problems: [{ field: "programevent", problem: "not_offered" }], options: now }],
+    });
+    const user = await toStep2(sender);
+    await fillRequired(user);
+
+    await user.click(sendButton());
+
+    // Still on Step 2, with the occasion emptied and marked.
+    expect(screen.getByRole("heading", { level: 2, name: "Tell us about them" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("One of your choices is no longer on the list. Please choose again.");
+    expect(screen.getByText("That choice is no longer on the list. Please choose again.")).toBeInTheDocument();
+    expect(stillNeeded()).toBe("Still needed: What was the occasion?");
+    expect(sendButton()).toBeDisabled();
+    expect(calls).toHaveLength(0);
+
+    await user.click(screen.getByRole("button", { name: /What was the occasion\?/ }));
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(now.programevent);
+    await user.click(screen.getByRole("option", { name: "Toy Drive" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText("That choice is no longer on the list. Please choose again.")).not.toBeInTheDocument();
+
+    await user.click(sendButton());
+    expect(starts).toHaveLength(2);
+    expect(starts[1]!.details.programevent).toBe("Toy Drive");
+    expect(screen.getByRole("heading", { level: 2, name: "Sending" })).toBeInTheDocument();
+  });
+
+  it("keeps the answers and offers Send again when the Submission could not be started", async () => {
+    const { sender, starts } = fakeSender({ beginResults: [{ ok: false, reason: "failed" }] });
+    const user = await toStep2(sender);
+    await fillRequired(user);
+
+    await user.click(sendButton());
+
+    expect(screen.getByRole("alert")).toHaveTextContent("We couldn't start sending. Please try again.");
+    expect(titleBox()).toHaveValue("Dovetail class, May 3");
+    await user.click(sendButton());
+    expect(starts).toHaveLength(2);
+    expect(screen.getByRole("heading", { level: 2, name: "Sending" })).toBeInTheDocument();
+  });
+});
+
+describe("sending", () => {
+  it("goes choose, describe, Send, thank-you", async () => {
+    const user = userEvent.setup();
+    const { sender, calls, starts } = fakeSender();
     render(<App boot={boot} sender={sender} />);
 
     // Step 1: choose.
@@ -302,22 +554,20 @@ describe("sending", () => {
     expect(screen.getByText("✓ 1 photo chosen")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Next" }));
 
-    // Step 2: Title and the rights tick.
+    // Step 2: describe them.
     expect(screen.getByText("Step 2 of 4")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "Tell us about them" })).toHaveFocus();
-    expect(screen.getByText("For example: Dovetail class, May 3")).toBeInTheDocument();
-    expect(screen.getByText(/means you need to fill this in/)).toBeInTheDocument();
     expect(screen.queryByText(/This will apply to all/)).not.toBeInTheDocument();
-    await user.type(screen.getByRole("textbox", { name: /What are these\?/ }), "Dovetail class, May 3");
-    await user.click(screen.getByRole("checkbox", { name: /I took these, or I have permission to share them with SDFWA/ }));
-    await user.click(screen.getByRole("button", { name: "Send them" }));
+    await fillRequired(user);
+    await user.click(sendButton());
 
     // Sending.
     expect(screen.getByRole("heading", { level: 2, name: "Sending" })).toBeInTheDocument();
     expect(screen.getByText("Please keep this page open and your phone awake until it says thank you.")).toBeInTheDocument();
+    expect(starts).toHaveLength(1);
+    expect(starts[0]!.details.title).toBe("Dovetail class, May 3");
     expect(calls).toHaveLength(1);
     expect(calls[0]!.file.name).toBe("IMG_4821.JPG");
-    expect(calls[0]!.details).toEqual({ title: "Dovetail class, May 3", rightsConfirmed: true });
     act(() => calls[0]!.events.onProgress(40));
     expect(screen.getByRole("progressbar", { name: "IMG_4821.JPG" })).toHaveAttribute("aria-valuenow", "40");
     expect(screen.getByText("40%")).toBeInTheDocument();
@@ -335,14 +585,10 @@ describe("sending", () => {
 
   it("sends two at a time, all in one Submission, with each one's progress", async () => {
     const user = userEvent.setup();
-    const { sender, calls, submissions } = fakeSender();
+    const { sender, calls, starts, submissions } = fakeSender();
     render(<App boot={boot} sender={sender} />);
     await pick(user, [photo("a.jpg"), photo("b.jpg"), video("c.mov"), photo("d.jpg"), photo("e.jpg")]);
-    await user.click(screen.getByRole("button", { name: "Next" }));
-    expect(screen.getByText("This will apply to all 5 of them.")).toBeInTheDocument();
-    await user.type(screen.getByRole("textbox", { name: /What are these\?/ }), "Swap meet");
-    await user.click(screen.getByRole("checkbox", { name: /I took these/ }));
-    await user.click(screen.getByRole("button", { name: "Send them" }));
+    await describeAndSend(user, "Swap meet");
 
     const statuses = () => screen.getAllByRole("status").map((s) => s.textContent);
     expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg"]);
@@ -360,7 +606,8 @@ describe("sending", () => {
 
     expect(calls).toHaveLength(5);
     expect(submissions()).toBe(1);
-    expect(calls.every((c) => c.submission === 1 && c.details.title === "Swap meet")).toBe(true);
+    expect(starts).toEqual([expect.objectContaining({ expectedItems: 5 })]);
+    expect(calls.every((c) => c.submission === 1)).toBe(true);
     expect(screen.getByRole("heading", { name: "Thank you! We have your 4 photos and 1 video." })).toHaveFocus();
   });
 
@@ -407,7 +654,7 @@ describe("sending", () => {
 
   it("offers Try again when one could not be saved, and sends the same file again", async () => {
     const user = userEvent.setup();
-    const { sender, calls } = fakeSender();
+    const { sender, calls, starts } = fakeSender();
     render(<App boot={boot} sender={sender} />);
     await pick(user, [photo()]);
     await describeAndSend(user);
@@ -418,13 +665,13 @@ describe("sending", () => {
 
     expect(calls).toHaveLength(2);
     expect(calls[1]!.file).toBe(calls[0]!.file);
-    expect(calls[1]!.details).toEqual(calls[0]!.details);
     expect(calls[1]!.submission).toBe(calls[0]!.submission);
+    expect(starts).toHaveLength(1);
     await act(async () => calls[1]!.finish({ ok: true }));
     expect(screen.getByRole("heading", { name: "Thank you! We have your 1 photo." })).toBeInTheDocument();
   });
 
-  it("starts fresh, in a new Submission, after the thank-you", async () => {
+  it("starts fresh, in a new Submission with empty answers, after the thank-you", async () => {
     const user = userEvent.setup();
     const { sender, calls, submissions } = fakeSender();
     render(<App boot={boot} sender={sender} />);
@@ -437,35 +684,13 @@ describe("sending", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Choose your photos and videos" })).toHaveFocus();
     expect(screen.queryByText(/chosen/)).not.toBeInTheDocument();
     await pick(user, [video()]);
-    await describeAndSend(user, "Swap meet");
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    expect(titleBox()).toHaveValue("");
+    expect(rightsBox()).not.toBeChecked();
+    await fillRequired(user, "Swap meet");
+    await user.click(sendButton());
     expect(submissions()).toBe(2);
     expect(calls[1]!.submission).toBe(2);
-  });
-
-  it("keeps Send unavailable until there is a Title and the rights tick, saying what is still needed", async () => {
-    const user = userEvent.setup();
-    const { sender, calls } = fakeSender();
-    render(<App boot={boot} sender={sender} />);
-    await pick(user, [photo()]);
-    await user.click(screen.getByRole("button", { name: "Next" }));
-
-    const send = screen.getByRole("button", { name: "Send them" });
-    expect(send).toBeDisabled();
-    expect(screen.getByText("Still needed: What are these?, Permission to share")).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: /What are these\?/ })).toBeRequired();
-
-    await user.type(screen.getByRole("textbox", { name: /What are these\?/ }), "   ");
-    expect(send).toBeDisabled();
-    await user.type(screen.getByRole("textbox", { name: /What are these\?/ }), "Swap meet");
-    expect(screen.getByText("Still needed: Permission to share")).toBeInTheDocument();
-    expect(send).toBeDisabled();
-
-    await user.click(screen.getByRole("checkbox", { name: /I took these/ }));
-    expect(screen.queryByText(/Still needed/)).not.toBeInTheDocument();
-    expect(send).toBeEnabled();
-    await user.click(send);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.details.title).toBe("Swap meet");
   });
 
   it("announces each one's state, not every percent", async () => {
@@ -518,29 +743,29 @@ describe("sending", () => {
 
   it("never sends anything about who the member is: the service takes that from the sign-in", async () => {
     const user = userEvent.setup();
-    const send = vi.fn<(file: File, details: SendDetails, events: SendEvents) => Promise<SendResult>>(
-      () => new Promise(() => {}),
-    );
-    render(<App boot={boot} sender={{ begin: () => ({ send }) }} />);
+    const { sender, starts } = fakeSender();
+    render(<App boot={boot} sender={sender} />);
     await pick(user, [photo()]);
     await describeAndSend(user);
 
-    const [, details] = send.mock.calls[0]!;
-    expect(Object.keys(details).sort()).toEqual(["rightsConfirmed", "title"]);
-    expect(JSON.stringify(details)).not.toMatch(/Pat|pat@example/);
+    expect(Object.keys(starts[0]!).sort()).toEqual(["details", "expectedItems", "rightsConfirmed"]);
+    expect(Object.keys(starts[0]!.details).sort()).toEqual(
+      ["caption", "date", "eventname", "location", "programevent", "subjecttype", "title"],
+    );
+    expect(JSON.stringify(starts)).not.toMatch(/Pat|pat@example/);
   });
 
-  it("sends only once when Send is pressed twice", async () => {
+  it("starts only one Submission when Send is pressed twice", async () => {
     const user = userEvent.setup();
-    const { sender, calls } = fakeSender();
+    const { sender, calls, starts } = fakeSender();
     render(<App boot={boot} sender={sender} />);
     await pick(user, [photo()]);
     await user.click(screen.getByRole("button", { name: "Next" }));
-    await user.type(screen.getByRole("textbox", { name: /What are these\?/ }), "Swap meet");
-    await user.click(screen.getByRole("checkbox", { name: /I took these/ }));
+    await fillRequired(user, "Swap meet");
 
-    await user.dblClick(screen.getByRole("button", { name: "Send them" }));
+    await user.dblClick(sendButton());
 
+    expect(starts).toHaveLength(1);
     expect(calls).toHaveLength(1);
   });
 });

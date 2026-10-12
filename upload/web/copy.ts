@@ -97,11 +97,34 @@ export const copy = {
     requiredLegend: "means you need to fill this in",
     title: "What are these?",
     titleHint: "For example: Dovetail class, May 3",
+    occasion: "What was the occasion?",
+    subjects: "What's in them? (pick all that apply)",
+    date: "When were they taken?",
+    dateHint: "Leave empty if you're not sure. We'll use the date on the photo when we can.",
+    location: "Where were they taken?",
+    eventName: "Name of the class or event, if there is one",
+    caption: "Anything else we should know?",
     rights: RIGHTS_STATEMENT,
     stillNeeded: (fields: string[]) => `Still needed: ${fields.join(", ")}`,
     // Not on #31: the names the Still-needed line uses. Needs a read-through.
     neededTitle: "What are these?",
+    neededOccasion: "What was the occasion?",
+    neededSubjects: "What's in them?",
     neededRights: "Permission to share",
+    // Not on #31 (#56): the dropdowns' empty state and the way to empty the
+    // optional one again. Needs a read-through.
+    chooseOne: "Choose one",
+    leaveEmpty: "Leave empty",
+    // Not on #31 (#56): while the club's lists load, and when they can't.
+    // Needs a read-through.
+    loadingChoices: "Getting the lists of choices…",
+    choicesFailed: "We couldn't get the lists of choices just now.",
+    tryAgain: "Try again",
+    // Not on #31 (#56): a choice removed from the club's list after the page
+    // loaded, and Send failing before anything was sent. Needs a read-through.
+    noLongerOffered: "That choice is no longer on the list. Please choose again.",
+    choiceGone: "One of your choices is no longer on the list. Please choose again.",
+    startFailed: "We couldn't start sending. Please try again.",
     send: "Send them",
   },
 

@@ -5,7 +5,7 @@
 // testing/fake-rs.ts). Many photos and videos at once are in many.test.ts.
 import { readdir } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
-import { client, heic, jpeg, member, png, type UploadOptions } from "./testing/client.ts";
+import { client, heic, jpeg, member, png, startBody, type UploadOptions } from "./testing/client.ts";
 import { FAKE_RS_KEY } from "./testing/fake-rs.ts";
 import { COOKIE, signedInAs, startHarness, type Harness } from "./testing/harness.ts";
 
@@ -17,13 +17,19 @@ const RIGHTS = 'I took these, or I have permission to share them with SDFWA';
 const upload = (data: Buffer, opts?: UploadOptions) => client(h).upload(data, opts);
 const finish = (uploadId: string, body?: Record<string, unknown>, cookie?: string) => client(h).finish(uploadId, body, cookie);
 
+/** What is in staging besides the Submissions' small records. */
+const staged = async () => (await readdir(h.stagingDir)).filter((f) => !f.endsWith(".submission.json"));
+
+/** The ResourceSpace calls that change something (reading the choices or an Item back does not). */
+const writes = () => h.fakeRs.calls.filter((c) => !c.fn.startsWith("get_"));
+
 const only = <T>(m: Map<number, T>): T => {
   expect(m.size).toBe(1);
   return [...m.values()][0]!;
 };
 
 describe("sending one photo", () => {
-  it("lands one Item in Pending Review with the Title and all six Submitter fields", async () => {
+  it("lands one Item in Pending Review with the answers and all six Submitter fields", async () => {
     h = await startHarness();
     h.auth.respond = member();
     const photo = jpeg();
@@ -39,6 +45,8 @@ describe("sending one photo", () => {
     expect(item.file?.data.equals(photo)).toBe(true);
     expect(item.fields).toEqual({
       title: "Dovetail class, May 3",
+      programevent: "Classes & Workshops",
+      subjecttype: "Instruction / Class in Session",
       submittername: "Pat Member",
       submitteremail: "pat@example.org",
       submittermemberid: "M-1234",
@@ -110,7 +118,11 @@ describe("sending one photo", () => {
     h = await startHarness();
     h.auth.respond = member();
 
-    await finish(await upload(jpeg()), { title: "  Pat's café: dovetails & joints — May 3  " });
+    const submission = await client(h).startSubmission(
+      undefined,
+      startBody({ details: { title: "  Pat's café: dovetails & joints — May 3  " } }),
+    );
+    await finish(await upload(jpeg(), { submission }));
 
     const item = only(h.fakeRs.resources);
     expect(item.fields.title).toBe("Pat's café: dovetails & joints — May 3");
@@ -124,9 +136,15 @@ describe("sending one photo", () => {
     await finish(await upload(jpeg()));
 
     expect(h.fakeRs.calls.map((c) => c.fn)).toEqual([
+      // The choices, to check the answers when the Submission starts.
+      ...Array(3).fill("get_field_options"),
       "create_resource",
       "upload_multipart",
-      ...Array(7).fill("update_field"),
+      // Title, Program / Event, Subject Type and the six Submitter fields.
+      ...Array(9).fill("update_field"),
+      // The read-back.
+      "get_resource_field_data",
+      ...Array(3).fill("get_field_options"),
     ]);
     for (const c of h.fakeRs.calls) {
       expect(c.headers.host).toBe("media.example.org");
@@ -205,10 +223,18 @@ describe("Submitter fields", () => {
     expect(fields.submissionid).not.toBe("forged");
     expect(fields.submitterrights).toMatch(/^Confirmed /);
     expect(JSON.stringify(fields)).not.toMatch(/Mallory|mallory|M-0001/);
-    // Only the Title and the six Submitter fields are written: nothing else the browser sent.
-    expect(Object.keys(fields).sort()).toEqual(
-      ["submissionid", "submitteremail", "submitterfilename", "submittermemberid", "submittername", "submitterrights", "title"],
-    );
+    // Only the answers and the six Submitter fields are written: nothing else the browser sent.
+    expect(Object.keys(fields).sort()).toEqual([
+      "programevent",
+      "subjecttype",
+      "submissionid",
+      "submitteremail",
+      "submitterfilename",
+      "submittermemberid",
+      "submittername",
+      "submitterrights",
+      "title",
+    ]);
   });
 
   it("cannot be borrowed: only the member who sent the photo can hand it over", async () => {
@@ -257,7 +283,7 @@ describe("the staged file", () => {
     const id = await upload(jpeg(), { metadata: { filename: "../../etc/passwd" } });
 
     expect(id).toMatch(/^[0-9a-f]{32}$/);
-    expect((await readdir(h.stagingDir)).every((f) => f.startsWith(id))).toBe(true);
+    expect((await staged()).every((f) => f.startsWith(id))).toBe(true);
   });
 });
 
@@ -343,29 +369,25 @@ describe("what the service refuses", () => {
 
     expect(res.status).toBe(415);
     expect(await res.json()).toEqual({ error: "wrong_type" });
-    expect(h.fakeRs.calls).toHaveLength(0);
+    expect(writes()).toHaveLength(0);
     expect((await readdir(h.stagingDir)).filter((f) => f.startsWith(id) && !f.endsWith(".item.json"))).toEqual([]);
   });
 
-  it("a hand-off with no Title", async () => {
+  it("answers sent with a hand-off: they come only from the Submission, checked when it started", async () => {
     h = await startHarness();
     h.auth.respond = member();
 
-    const res = await finish(await upload(jpeg()), { title: "   " });
+    const res = await finish(await upload(jpeg()), {
+      title: "Something else",
+      programevent: "Not a real occasion",
+      date: "1999-01-01",
+      rightsConfirmed: false,
+    });
 
-    expect(res.status).toBe(422);
-    expect(await res.json()).toEqual({ error: "title_required" });
-    expect(h.fakeRs.calls).toHaveLength(0);
-  });
-
-  it("a hand-off without the rights confirmation", async () => {
-    h = await startHarness();
-    h.auth.respond = member();
-
-    const res = await finish(await upload(jpeg()), { rightsConfirmed: "yes" });
-
-    expect(res.status).toBe(422);
-    expect(await res.json()).toEqual({ error: "rights_required" });
+    expect(res.status).toBe(200);
+    const item = only(h.fakeRs.resources);
+    expect(item.fields).toMatchObject({ title: "Dovetail class, May 3", programevent: "Classes & Workshops" });
+    expect(item.fields.date).toBeUndefined();
   });
 
   it("a hand-off before the whole photo has arrived", async () => {
@@ -379,7 +401,7 @@ describe("what the service refuses", () => {
     const res = await finish(id);
 
     expect(res.status).toBe(409);
-    expect(h.fakeRs.calls).toHaveLength(0);
+    expect(writes()).toHaveLength(0);
   });
 
   it("an unknown upload id", async () => {
@@ -399,8 +421,8 @@ describe("what the service refuses", () => {
 
     expect(res.status).toBe(413);
     expect(await res.json()).toEqual({ error: "too_big" });
-    expect(h.fakeRs.calls).toHaveLength(0);
-    expect(await readdir(h.stagingDir)).toEqual([]);
+    expect(writes()).toHaveLength(0);
+    expect(await staged()).toEqual([]);
   });
 
   it("a file bigger than any we take, before storing it", async () => {
@@ -412,7 +434,7 @@ describe("what the service refuses", () => {
     const res = await c.create(await c.startSubmission(), 100_001);
     expect(res.status).toBe(413);
     expect(await res.json()).toEqual({ error: "too_big" });
-    expect(await readdir(h.stagingDir)).toEqual([]);
+    expect(await staged()).toEqual([]);
   });
 
   it("a hand-off that is not JSON", async () => {
@@ -477,7 +499,7 @@ describe("without the ResourceSpace key configured", () => {
     expect(await page.text()).toContain('"screen":"unavailable"');
     expect(health.status).toBe(503);
     expect(await health.json()).toMatchObject({ resourcespace: { configured: false } });
-    expect(await readdir(h.stagingDir)).toEqual([]);
+    expect(await staged()).toEqual([]);
   });
 
   it("still sends visitors to sign in and non-members to the renewal page", async () => {

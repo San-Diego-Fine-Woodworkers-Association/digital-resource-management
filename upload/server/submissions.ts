@@ -7,19 +7,29 @@
 // on every use, so nobody can add to someone else's Submission or choose an
 // id themselves.
 //
+// Each Submission has a record (#56): its id and short code, who started it
+// and when, how many Items the page said it would send, and the answers from
+// Step 2 with the rights confirmation, already checked (app.ts). Every Item
+// in it is written from this record. The record is also kept on the staging
+// volume, so Items already uploaded still get their answers after a restart.
+//
 // The limits are checked twice, because a file's kind is only known once its
 // bytes have arrived:
 //   - when an upload starts: the number of Items and the total size, from the
 //     size the upload declares (tus never lets it grow past that);
 //   - when it is handed over: the number of videos, from its content.
 //
-// Held in memory, like the daily quotas (#23). After a restart the service
-// forgets the Submissions in progress: uploads already made still hand over
-// (their Submission ID is stamped on them), but new ones into a forgotten
-// Submission are refused, and the page starts a new one next time.
+// The room taken is held in memory, like the daily quotas (#23). After a
+// restart the service forgets it: uploads already made still hand over (their
+// Submission ID is stamped on them, and the record is read back from disk),
+// but new ones into a forgotten Submission are refused, and the page starts a
+// new one next time.
+import { readFile, rename, writeFile } from "node:fs/promises";
+import path from "node:path";
+import type { Details } from "../shared/details.ts";
 import type { Limits, Refusal } from "../shared/media.ts";
 import { checkRoom } from "../shared/media.ts";
-import { newSubmissionId } from "./naming.ts";
+import { isSubmissionId, newSubmissionId, submissionCode } from "./naming.ts";
 import type { SessionUser } from "./session.ts";
 
 /** A Submission nobody has added to for this long is forgotten. Matches the staging sweep (#23). */
@@ -33,13 +43,38 @@ interface Submission {
   /** Uploads accepted as videos. */
   videos: Set<string>;
   nextItemNumber: number;
+  record?: SubmissionRecord;
+}
+
+/** What a Submission is, as the service keeps it (#56). */
+export interface SubmissionRecord {
+  submissionId: string;
+  /** The short code in its Items' file names. */
+  code: string;
+  /** The session user id of the member who started it. */
+  owner: string;
+  createdAt: string;
+  /** How many photos and videos the page said it would send. */
+  expectedItems: number;
+  /** The Step 2 answers, checked, for every Item. */
+  details: Details;
+  /** The rights statement and when it was confirmed, as written on every Item. */
+  rights: string;
+}
+
+export interface Start {
+  expectedItems: number;
+  details: Details;
+  rights: string;
 }
 
 export type Reservation = { itemNumber: number } | { refusal: Refusal } | { unknown: true };
 
 export interface Submissions {
-  /** A new, empty Submission for this member; returns its id. */
-  create(user: SessionUser): string;
+  /** A new, empty Submission for this member, with its record. */
+  create(user: SessionUser, start: Start): Promise<SubmissionRecord>;
+  /** The record of one of this member's Submissions, if it is known. */
+  record(submissionId: string, owner: string): Promise<SubmissionRecord | undefined>;
   /**
    * Room for one more upload of `size` bytes: reserves it and gives its Item
    * number, or says why not. `unknown` when the id is not one of this
@@ -56,8 +91,30 @@ export interface Submissions {
   release(submissionId: string, uploadId: string): void;
 }
 
-export function createSubmissions(limits: Limits, now: () => number = Date.now): Submissions {
+export function createSubmissions(
+  limits: Limits,
+  opts: { now?: () => number; dir?: string } = {},
+): Submissions {
+  const now = opts.now ?? Date.now;
   const all = new Map<string, Submission>();
+
+  const recordPath = (dir: string, id: string) => path.join(dir, `${id}.submission.json`);
+
+  async function saveRecord(record: SubmissionRecord) {
+    if (!opts.dir) return;
+    const file = recordPath(opts.dir, record.submissionId);
+    await writeFile(`${file}.tmp`, JSON.stringify(record), { mode: 0o600 });
+    await rename(`${file}.tmp`, file);
+  }
+
+  async function loadRecord(id: string): Promise<SubmissionRecord | undefined> {
+    if (!opts.dir || !isSubmissionId(id)) return undefined;
+    try {
+      return JSON.parse(await readFile(recordPath(opts.dir, id), "utf8")) as SubmissionRecord;
+    } catch {
+      return undefined;
+    }
+  }
 
   function forgetOld() {
     const cutoff = now() - FORGET_AFTER_MS;
@@ -65,12 +122,29 @@ export function createSubmissions(limits: Limits, now: () => number = Date.now):
   }
 
   return {
-    create(user) {
+    async create(user, start) {
       forgetOld();
       let id = newSubmissionId();
       while (all.has(id)) id = newSubmissionId();
-      all.set(id, { owner: user.id, touchedAt: now(), uploads: new Map(), videos: new Set(), nextItemNumber: 1 });
-      return id;
+      const record: SubmissionRecord = {
+        submissionId: id,
+        code: submissionCode(id),
+        owner: user.id,
+        createdAt: new Date(now()).toISOString(),
+        ...start,
+      };
+      await saveRecord(record);
+      all.set(id, { owner: user.id, touchedAt: now(), uploads: new Map(), videos: new Set(), nextItemNumber: 1, record });
+      return record;
+    },
+
+    async record(submissionId, owner) {
+      const s = all.get(submissionId);
+      if (s?.record) return s.record.owner === owner ? s.record : undefined;
+      const record = await loadRecord(submissionId);
+      if (!record || record.owner !== owner) return undefined;
+      if (s) s.record = record;
+      return record;
     },
 
     reserve(submissionId, user, uploadId, size) {

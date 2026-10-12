@@ -14,6 +14,10 @@ export function newSubmissionId(): string {
   return id;
 }
 
+export function isSubmissionId(id: string): boolean {
+  return new RegExp(`^[${ALPHABET}]{12}$`).test(id);
+}
+
 export function submissionCode(submissionId: string): string {
   return submissionId.slice(0, 6);
 }

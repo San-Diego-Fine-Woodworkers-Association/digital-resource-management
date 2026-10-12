@@ -3,7 +3,8 @@
 //   /upload, /upload/...   the page, gated on the SDFWA session
 //   /upload/assets/...     the built app's scripts and styles (public)
 //   /upload/api/...        the narrow API; session re-checked on every call
-//     POST /submissions    start a Submission: its id goes on every upload (submissions.ts)
+//     GET /options         the live choices for the list fields (options.ts)
+//     POST /submissions    start a Submission with the Step 2 answers: its id goes on every upload (submissions.ts)
 //     /files, /files/<id>  tus: each photo or video arrives in chunks (uploads.ts)
 //     POST /items          hand an arrived one to ResourceSpace (items.ts)
 //     GET /items/<id>      where that hand-off has got to; the page polls it
@@ -19,7 +20,10 @@ import { BOOT_ELEMENT_ID, type Boot } from "../shared/boot.ts";
 import { createAuditLog, stdoutSink, type AuditEvent, type AuditSink } from "./audit.ts";
 import type { Config } from "./config.ts";
 import { checkHealth } from "./health.ts";
-import { createItems, MAX_TITLE, type HandOffRequest, type HandOffResult } from "./items.ts";
+import { checkDetails } from "../shared/details.ts";
+import { createItems, type HandOffRequest, type HandOffResult } from "./items.ts";
+import { rightsRecord } from "./naming.ts";
+import { createLiveOptions } from "./options.ts";
 import { createResourceSpace } from "./resourcespace.ts";
 import { checkSession, displayName, isEntitled, type Session, type SessionUser } from "./session.ts";
 import { createSubmissions } from "./submissions.ts";
@@ -29,6 +33,8 @@ export interface ServiceOptions {
   auditSink?: AuditSink;
   /** Operational messages (not the audit trail). */
   log?: (message: string, fields?: Record<string, unknown>) => void;
+  /** The pause before the first read-back retry (items.ts); tests shorten it. */
+  readBackRetryDelayMs?: number;
 }
 
 const BASE = "/upload";
@@ -63,7 +69,7 @@ const MIME: Record<string, string> = {
 
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
-/** The hand-off request is a few hundred bytes; anything much bigger is not one. */
+/** A Submission's answers are a few KB at most (a 2000-character Caption); anything much bigger is not one. */
 const MAX_JSON_BODY = 16 * 1024;
 
 class BodyError extends Error {
@@ -94,16 +100,12 @@ async function readJson(req: http.IncomingMessage): Promise<unknown> {
   }
 }
 
-/** Only the three things the page may say about an Item; anything else it sends is ignored. */
+/** Only which upload; the answers come from its Submission's record. Anything else the page sends is ignored. */
 function parseHandOff(body: unknown): HandOffRequest | { error: string } {
   if (typeof body !== "object" || body === null) return { error: "invalid" };
   const b = body as Record<string, unknown>;
   if (typeof b.uploadId !== "string") return { error: "invalid" };
-  const title = typeof b.title === "string" ? b.title.replace(/[\u0000-\u001f\u007f]+/g, " ").trim() : "";
-  if (!title) return { error: "title_required" };
-  if (title.length > MAX_TITLE) return { error: "title_too_long" };
-  if (b.rightsConfirmed !== true) return { error: "rights_required" };
-  return { uploadId: b.uploadId, title, rightsConfirmed: true };
+  return { uploadId: b.uploadId };
 }
 
 /** The promise's value if it settles within `ms`, otherwise undefined (it carries on). */
@@ -159,13 +161,22 @@ function scriptSafeJson(value: unknown): string {
 export function createService(config: Config, options: ServiceOptions = {}): http.Server {
   const audit = createAuditLog(options.auditSink ?? stdoutSink);
   const rsConfigured = config.rsApiKey !== "";
-  const submissions = createSubmissions(config.limits);
-  const uploads = createUploads(config, submissions);
-  const items = createItems(config, { uploads, submissions, rs: createResourceSpace(config) });
   const log =
     options.log ??
     ((message: string, fields: Record<string, unknown> = {}) =>
       process.stderr.write(JSON.stringify({ time: new Date().toISOString(), message, ...fields }) + "\n"));
+  const rs = createResourceSpace(config);
+  const liveOptions = createLiveOptions(rs);
+  const submissions = createSubmissions(config.limits, { dir: config.stagingDir });
+  const uploads = createUploads(config, submissions);
+  const items = createItems(config, {
+    uploads,
+    submissions,
+    rs,
+    options: liveOptions,
+    log,
+    retryDelayMs: options.readBackRetryDelayMs,
+  });
 
   const webRoot = path.resolve(config.webRoot);
   const indexHtml = readFileSync(path.join(webRoot, "index.html"), "utf8");
@@ -282,13 +293,14 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
     const isFiles = url.pathname === FILES_PATH || url.pathname.startsWith(`${FILES_PATH}/`);
     const isItems = route === "/items";
     const isSubmissions = route === "/submissions";
+    const isOptions = route === "/options";
     if (route.startsWith("/items/") && (method === "GET" || method === "HEAD")) {
       const status = await items.status(route.slice("/items/".length), s.user);
       if (status.status === "not_found") return answer(404, { error: "not_found" }, "not_found", s.user);
       const body = status.status === "refused" ? { status: "refused", error: status.refusal } : status;
       return answer(200, body, "ok", s.user);
     }
-    if ((isFiles || isItems || isSubmissions) && !rsConfigured) {
+    if ((isFiles || isItems || isSubmissions || isOptions) && !rsConfigured) {
       log("refusing uploads: RS_UPLOADER_API_KEY is not set");
       return answer(503, { error: "unavailable" }, "not_configured", s.user, { "Retry-After": "300" });
     }
@@ -302,6 +314,7 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
     }
     if (isItems && method === "POST") return handOff(req, s.user, answer, record);
     if (isSubmissions && method === "POST") return startSubmission(req, s.user, answer);
+    if (isOptions && (method === "GET" || method === "HEAD")) return sendOptions(answer, s.user);
     return answer(404, { error: "not_found" }, "not_found", s.user);
   }
 
@@ -314,15 +327,58 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
     extra?: Partial<AuditEvent>,
   ) => void;
 
-  /** Nothing in the body is used; it must be JSON only so other sites cannot start one. */
-  async function startSubmission(req: http.IncomingMessage, user: SessionUser, answer: Answer) {
+  async function sendOptions(answer: Answer, user: SessionUser) {
     try {
-      await readJson(req);
+      return answer(200, { options: await liveOptions.get() }, "ok", user);
+    } catch (err) {
+      log("could not read the choices from ResourceSpace", { error: err instanceof Error ? err.message : String(err) });
+      return answer(503, { error: "unavailable" }, "unavailable", user, { "Retry-After": "30" });
+    }
+  }
+
+  /**
+   * Starts a Submission from the Step 2 answers, checked here because
+   * ResourceSpace's API does not (ADR 0003): the required fields, and each
+   * choice against the live options. JSON only, so other sites cannot start one.
+   */
+  async function startSubmission(req: http.IncomingMessage, user: SessionUser, answer: Answer) {
+    let body: Record<string, unknown>;
+    try {
+      const raw = await readJson(req);
+      if (typeof raw !== "object" || raw === null) throw new BodyError(400);
+      body = raw as Record<string, unknown>;
     } catch (err) {
       const status = err instanceof BodyError ? err.status : 400;
       return answer(status, { error: "invalid" }, "invalid", user);
     }
-    const submissionId = submissions.create(user);
+    const expectedItems = body.expectedItems;
+    if (typeof expectedItems !== "number" || !Number.isInteger(expectedItems) || expectedItems < 1 || expectedItems > config.limits.maxItems) {
+      return answer(400, { error: "invalid" }, "invalid", user);
+    }
+    if (body.rightsConfirmed !== true) return answer(422, { error: "rights_required" }, "rights_required", user);
+
+    let checked;
+    try {
+      checked = checkDetails(body.details, await liveOptions.get());
+      // A choice not in the cached list may have just been added: look again before refusing it.
+      if ("problems" in checked && checked.problems.some((p) => p.problem === "not_offered")) {
+        checked = checkDetails(body.details, await liveOptions.get(0));
+      }
+    } catch (err) {
+      log("could not read the choices from ResourceSpace", { error: err instanceof Error ? err.message : String(err) });
+      return answer(503, { error: "unavailable" }, "unavailable", user, { "Retry-After": "30" });
+    }
+    if ("problems" in checked) {
+      // With the choices as they are now, so the page can offer them again.
+      return answer(422, { error: "invalid_details", problems: checked.problems, options: await liveOptions.get() }, "invalid_details", user);
+    }
+
+    const record = await submissions.create(user, {
+      expectedItems,
+      details: checked.details,
+      rights: rightsRecord(new Date()),
+    });
+    const submissionId = record.submissionId;
     return answer(201, { submissionId }, "submission_started", user, {}, { submissionId });
   }
 

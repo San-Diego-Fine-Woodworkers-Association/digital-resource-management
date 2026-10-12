@@ -7,8 +7,11 @@ import type { Sender } from "./send.ts";
 import { SendMedia } from "./SendMedia.tsx";
 import { Page } from "./ui.tsx";
 
-/** Used only if no sender is given: every send fails, so nothing is lost silently. */
-const noSender: Sender = { begin: () => ({ send: async () => ({ ok: false, reason: "failed" }) }) };
+/** Used only if no sender is given: nothing can start, so nothing is lost silently. */
+const noSender: Sender = {
+  options: async () => ({ ok: false }),
+  begin: async () => ({ ok: false, reason: "failed" }),
+};
 
 export function App({ boot, sender = noSender }: { boot: Boot; sender?: Sender }) {
   // Light theme only in v1 (issue #31).

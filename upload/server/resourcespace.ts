@@ -10,9 +10,11 @@
 // public Host header and X-Forwarded-Proto: https, so ResourceSpace answers as
 // the public site (#17). RS_BASE_URL can point at the public address instead.
 //
-// Only three functions are used: create_resource (always with archive=-1,
-// Pending Review), upload_multipart and update_field. The proxy never changes
-// an Item's status (#34: the upload account could, through one core path).
+// Three functions write: create_resource (always with archive=-1, Pending
+// Review), upload_multipart and update_field. The proxy never changes an
+// Item's status (#34: the upload account could, through one core path). Two
+// only read, both covered by the #34 live permission test: get_field_options
+// (the live choices, ADR 0003) and get_resource_field_data (the read-back).
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -41,12 +43,22 @@ export interface ResourceSpace {
   uploadFile(ref: number, filePath: string, fileName: string, contentType: string): Promise<void>;
   /** Writes one field, by shortname. */
   updateField(ref: number, field: string, value: string): Promise<void>;
+  /** The choices a list field offers now, by shortname: active ones only, in ResourceSpace's order. */
+  fieldOptions(field: string): Promise<string[]>;
+  /** What the Item holds in each field the upload-service user can see, by shortname. */
+  fieldValues(ref: number): Promise<Record<string, string>>;
 }
 
 /** A short, single-line piece of ResourceSpace's answer, for the operational log. */
 function excerpt(body: string): string {
   return JSON.stringify(body.replace(/\s+/g, " ").slice(0, 200));
 }
+
+/**
+ * The most of an answer that is read. The read-back's answer is about 1 KB per
+ * field the upload-service user can see (13 of them, #34), with room to spare.
+ */
+const MAX_ANSWER = 1024 * 1024;
 
 interface RawResponse {
   status: number;
@@ -90,7 +102,7 @@ export function createResourceSpace(config: Config): ResourceSpace {
         let body = "";
         res.setEncoding("utf8");
         res.on("data", (c: string) => {
-          if (body.length < 64 * 1024) body += c;
+          if (body.length < MAX_ANSWER) body += c;
         });
         res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
         res.on("error", (err) => reject(new ResourceSpaceError(fn, err.message)));
@@ -170,6 +182,32 @@ export function createResourceSpace(config: Config): ResourceSpace {
       const fn = "update_field";
       const res = await request(fn, signedUrl(fn, { resource: ref, field, value }), "GET");
       if (json(fn, res) !== true) throw new ResourceSpaceError(fn, `field ${field} was not saved`, res.status);
+    },
+
+    async fieldOptions(field) {
+      const fn = "get_field_options";
+      // With nodeinfo, each choice comes with its `active` flag. Without it,
+      // RS 11.0 (r29660) lists deactivated choices too (found against a real
+      // instance while building #56), and update_field still accepts them.
+      const res = await request(fn, signedUrl(fn, { ref: field, nodeinfo: 1 }), "GET");
+      const nodes = json(fn, res);
+      // A bare `false`: the field is not a list, or the user cannot see it.
+      if (!Array.isArray(nodes)) throw new ResourceSpaceError(fn, `no options for ${field}`, res.status);
+      return nodes.flatMap((n: { name?: unknown; active?: unknown }) =>
+        typeof n?.name === "string" && Number(n.active ?? 1) !== 0 ? [n.name] : [],
+      );
+    },
+
+    async fieldValues(ref) {
+      const fn = "get_resource_field_data";
+      const res = await request(fn, signedUrl(fn, { resource: ref }), "GET");
+      const rows = json(fn, res);
+      if (!Array.isArray(rows)) throw new ResourceSpaceError(fn, `no field data for ${ref}`, res.status);
+      const values: Record<string, string> = {};
+      for (const row of rows as { name?: unknown; value?: unknown }[]) {
+        if (typeof row?.name === "string") values[row.name] = row.value == null ? "" : String(row.value);
+      }
+      return values;
     },
   };
 }
