@@ -58,7 +58,7 @@ export const copy = {
     titles: [
       "Choose your photos and videos",
       "Tell us about them",
-      "Change any single one",
+      "Change any single one (optional)",
       "Sending",
     ],
   },
@@ -91,9 +91,7 @@ export const copy = {
   },
 
   describe: {
-    // The first sentence of #31's line; the second ("You can change any
-    // single one on the next step.") comes with that step (#57).
-    appliesToAll: (count: number) => `This will apply to all ${count} of them.`,
+    appliesToAll: (count: number) => `This will apply to all ${count} of them. You can change any single one on the next step.`,
     requiredLegend: "means you need to fill this in",
     title: "What are these?",
     titleHint: "For example: Dovetail class, May 3",
@@ -126,7 +124,27 @@ export const copy = {
     noLongerOffered: "That choice is no longer on the list. Please choose again.",
     choiceGone: "One of your choices is no longer on the list. Please choose again.",
     startFailed: "We couldn't start sending. Please try again.",
+  },
+
+  change: {
+    intro: "Everything will use the details you just entered.",
+    optional: "This step is optional.",
+    howTo: "If a photo or video needs something different, tap it to change it. Otherwise just press Send.",
+    leaveEmpty: "Leave a box empty to use what you entered in the last step.",
+    done: "Done",
+    remove: "Remove this one",
+    changed: "Changed",
     send: "Send them",
+    // Not on #31 (#57): the tile's and the dialog's names, from the
+    // prototype's "Change details for ...". The tile's says when it is
+    // changed, as its badge does. Needs a read-through.
+    open: (name: string, changed: boolean) => `Change details for ${name}${changed ? " (Changed)" : ""}`,
+    dialogTitle: (name: string) => `Change details for ${name}`,
+    // Not on #31 (#57): a choice made for one photo or video was taken off
+    // the club's list after the page loaded. In the pattern of #56's
+    // choiceGone. Needs a read-through.
+    choiceGone: (names: string[]) =>
+      `A choice you made for ${names.join(", ")} is no longer on the list. Tap it to choose again, or press Send to use what you entered in the last step.`,
   },
 
   sending: {

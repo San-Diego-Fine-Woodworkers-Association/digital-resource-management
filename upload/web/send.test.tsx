@@ -28,11 +28,17 @@ afterEach(() => {
 describe("handing an arrived file over", () => {
   it("is done when the service answers sent", async () => {
     const fetch = service(json(200, { status: "sent" }));
-    expect(await handOver(ID, 1)).toEqual({ ok: true });
+    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: true });
     expect(fetch).toHaveBeenCalledTimes(1);
     const [url, init] = fetch.mock.calls[0]!;
     expect(url).toBe("/upload/api/items");
     expect(JSON.parse(String(init!.body))).toEqual({ uploadId: ID });
+  });
+
+  it("names the Item, so the service writes its own answers from Step 3 (#57)", async () => {
+    const fetch = service(json(200, { status: "sent" }));
+    expect(await handOver({ uploadId: ID, item: "7" }, 1)).toEqual({ ok: true });
+    expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body))).toEqual({ uploadId: ID, item: "7" });
   });
 
   it("polls the Item's status while the service is finishing, until it is sent", async () => {
@@ -42,7 +48,7 @@ describe("handing an arrived file over", () => {
       json(200, { status: "finishing" }),
       json(200, { status: "sent" }),
     );
-    expect(await handOver(ID, 1)).toEqual({ ok: true });
+    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: true });
     expect(fetch.mock.calls.slice(1).map(([url]) => url)).toEqual(Array(3).fill(`/upload/api/items/${ID}`));
   });
 
@@ -53,17 +59,17 @@ describe("handing an arrived file over", () => {
       json(503, { error: "auth_unavailable" }),
       json(200, { status: "sent" }),
     );
-    expect(await handOver(ID, 1)).toEqual({ ok: true });
+    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: true });
   });
 
   it("asks how it went when the connection drops while waiting for the answer", async () => {
     service(new TypeError("network"), json(200, { status: "finishing" }), json(200, { status: "sent" }));
-    expect(await handOver(ID, 1)).toEqual({ ok: true });
+    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: true });
   });
 
   it("gives the reason when the service refused the file while finishing", async () => {
     service(json(202, { status: "finishing" }), json(200, { status: "refused", error: "too_many_videos" }));
-    expect(await handOver(ID, 1)).toEqual({ ok: false, reason: "too_many_videos" });
+    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: false, reason: "too_many_videos" });
   });
 
   it.each([
@@ -72,17 +78,17 @@ describe("handing an arrived file over", () => {
     ["the upload is gone", json(404, { error: "not_found" })],
   ])("can be tried again when %s", async (_, poll) => {
     service(json(202, { status: "finishing" }), poll);
-    expect(await handOver(ID, 1)).toEqual({ ok: false, reason: "failed" });
+    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: false, reason: "failed" });
   });
 
   it("stops asking after about a minute without an answer", async () => {
     const fetch = service(json(202, { status: "finishing" }), ...Array.from({ length: 30 }, () => new TypeError("network")));
-    expect(await handOver(ID, 1)).toEqual({ ok: false, reason: "failed" });
+    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: false, reason: "failed" });
     expect(fetch).toHaveBeenCalledTimes(1 + 20);
   });
 
   it("passes a refusal from the hand-off straight on", async () => {
     service(json(415, { error: "wrong_type" }));
-    expect(await handOver(ID, 1)).toEqual({ ok: false, reason: "wrong_type" });
+    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: false, reason: "wrong_type" });
   });
 });

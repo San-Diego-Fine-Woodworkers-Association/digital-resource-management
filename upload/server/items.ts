@@ -11,8 +11,12 @@
 //
 // The answers and the rights confirmation come from the Submission's record,
 // checked when the Submission was started (#56); the Submitter fields only
-// from the verified session and the server itself. From the browser comes
-// just the device's file name (kept as Original Filename).
+// from the verified session and the server itself. From the browser come
+// just the device's file name (kept as Original Filename) and, on the
+// hand-off, the page's name for the Item: an Item changed in Step 3 gets its
+// own answers from the record, any other the Step 2 ones (#57). Which
+// answers an Item gets is settled when its record is made, so a retried
+// hand-off writes the same ones.
 //
 // ResourceSpace's API does not enforce required fields, and drops a choice it
 // does not know without saying so (ADR 0003). So after writing, the service
@@ -46,6 +50,8 @@ import { isUploadId, type Uploads } from "./uploads.ts";
 
 export interface HandOffRequest {
   uploadId: string;
+  /** The page's name for the Item, which says whose answers it gets if it was changed in Step 3 (#57). */
+  item?: string;
 }
 
 /** How many times the read-back writes a field again before giving up on it. */
@@ -73,6 +79,8 @@ export interface ItemRecord {
   sizeBytes: number;
   detectedType: string;
   kind: MediaKind;
+  /** Set when the Item has its own answers in the Submission's record (#57). */
+  item?: string;
   fileName: string;
   ref?: number;
   fileUploaded?: boolean;
@@ -164,7 +172,10 @@ export function createItems(
       log("no record of the Submission for an upload", { uploadId: upload.id, submissionId: upload.submissionId });
       return { outcome: "not_found" };
     }
-    const { details } = submission;
+    // An Item changed in Step 3 has its own answers; a retry keeps whichever it got first.
+    const own = (key: string | undefined) => (key !== undefined && submission.items && Object.hasOwn(submission.items, key) ? key : undefined);
+    const item = own(record ? record.item : req.item);
+    const details = item !== undefined ? submission.items![item]! : submission.details;
 
     if (!record) {
       const type = await detectFile(upload.path);
@@ -185,7 +196,8 @@ export function createItems(
         sizeBytes: upload.size,
         detectedType: type.mime,
         kind: type.kind,
-        // The member's Date, or none: never guessed from the upload day.
+        ...(item !== undefined ? { item } : {}),
+        // This Item's Date, or none: never guessed from the upload day.
         fileName: fileName({ date: details.date, title: details.title, submissionId, itemNumber, extension: type.extension }),
       };
     }
