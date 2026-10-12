@@ -78,7 +78,8 @@ describe("sending one photo", () => {
     expect(calls[0]!.file.name).toBe("IMG_4821.JPG");
     expect(calls[0]!.details).toEqual({ title: "Dovetail class, May 3", rightsConfirmed: true });
     act(() => calls[0]!.events.onProgress(40));
-    expect(screen.getByText("Sending… 40%")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Sending…" })).toHaveAttribute("aria-valuenow", "40");
+    expect(screen.getByText("40%")).toBeInTheDocument();
     act(() => calls[0]!.events.onFinishing());
     expect(screen.getByText("Finishing up…")).toBeInTheDocument();
     await act(async () => calls[0]!.finish({ ok: true }));

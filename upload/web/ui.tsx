@@ -1,22 +1,8 @@
 // Layout pieces shared by every screen.
 import { useEffect, useRef, type ReactNode } from "react";
-import { Button, Link, type ButtonProps, type LinkProps } from "@sdwa/components";
+import { Link } from "@sdwa/components";
 import type { ShellUser } from "../shared/boot.ts";
 import { copy } from "./copy.ts";
-
-/**
- * The design system's button-look link is text-sm / py-2: too small for this
- * audience (48 px touch targets, issue #31). Enlarged here until the design
- * system has a size prop (issue #39).
- */
-export function BigLink({ className = "", ...props }: LinkProps & { className?: string }) {
-  return <Link {...props} className={`min-h-14 w-full justify-center px-6 text-lg font-semibold ${className}`} />;
-}
-
-/** The same enlargement for buttons, until the design system's size prop (issue #39). */
-export function BigButton({ className = "", ...props }: ButtonProps & { className?: string }) {
-  return <Button {...props} className={`min-h-14 w-full justify-center px-6 text-lg font-semibold ${className}`} />;
-}
 
 export function Header({ user, signOutUrl }: { user?: ShellUser; signOutUrl?: string }) {
   return (
@@ -79,15 +65,5 @@ export function StepFrame({
       </div>
       {children}
     </section>
-  );
-}
-
-/** The red required marker. Decorative: the field itself carries `required` (issue #56 adds the full form). */
-export function Req() {
-  return (
-    <span aria-hidden className="text-destructive">
-      {" "}
-      *
-    </span>
   );
 }

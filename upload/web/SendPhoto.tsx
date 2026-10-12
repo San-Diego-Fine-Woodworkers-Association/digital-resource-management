@@ -2,17 +2,20 @@
 // rights confirmation, Send, thank-you. Many files (#54), the full details
 // form (#56), per-Item changes (step 3, #57) and the full set of Item states
 // and retries (#58, #59) build on this.
-//
-// Controls come from @sdwa/components where it has them (Button, TextField,
-// Label, Input, Description). The file picker, checkbox and progress bar are
-// not in the published design system yet (#38/#39), so they use
-// react-aria-components directly, which is what the design system wraps.
 import { useEffect, useRef, useState } from "react";
-import { Checkbox, FileTrigger, ProgressBar } from "react-aria-components";
-import { Description, Input, Label, TextField } from "@sdwa/components";
+import {
+  Button,
+  Checkbox,
+  Description,
+  FilePickerButton,
+  Input,
+  Label,
+  ProgressBar,
+  TextField,
+} from "@sdwa/components";
 import { copy } from "./copy.ts";
 import type { Sender, SendDetails } from "./send.ts";
-import { BigButton, Req, StepFrame } from "./ui.tsx";
+import { StepFrame } from "./ui.tsx";
 
 /** Photos only in this slice; videos arrive with #55. Matched by content on the service. */
 const ACCEPTED = ["image/jpeg", "image/png", "image/heic", "image/heif", ".jpg", ".jpeg", ".png", ".heic", ".heif"];
@@ -70,19 +73,22 @@ export function SendPhoto({ sender }: { sender: Sender }) {
         <StepFrame step={0} focusHeading={moved}>
           <p className="text-lg">{copy.choose.intro}</p>
           {file && <Chosen file={file} />}
-          <FileTrigger
+          <FilePickerButton
+            variant={file ? "secondary" : "primary"}
+            size="large"
+            className="w-full"
             acceptedFileTypes={ACCEPTED}
             onSelect={(list) => {
               const picked = list?.[0];
               if (picked) setFile(picked);
             }}
           >
-            <BigButton variant={file ? "secondary" : "primary"}>{copy.choose.button}</BigButton>
-          </FileTrigger>
+            {copy.choose.button}
+          </FilePickerButton>
           {file && (
-            <BigButton variant="primary" onPress={() => go({ step: "describe" })}>
+            <Button variant="primary" size="large" className="w-full" onPress={() => go({ step: "describe" })}>
               {copy.choose.next}
-            </BigButton>
+            </Button>
           )}
         </StepFrame>
       );
@@ -101,29 +107,17 @@ export function SendPhoto({ sender }: { sender: Sender }) {
             {copy.describe.requiredLegend}
           </p>
           <TextField value={title} onChange={setTitle} isRequired className="flex flex-col gap-1">
-            <Label className="text-base font-medium">
-              {copy.describe.title}
-              <Req />
-            </Label>
+            <Label className="text-base">{copy.describe.title}</Label>
             <Input className="min-h-12 text-base" maxLength={200} />
             <Description className="text-sm text-muted-foreground">{copy.describe.titleHint}</Description>
           </TextField>
-          <Checkbox isSelected={rights} onChange={setRights} className="group flex min-h-12 items-start gap-3 text-base">
-            <span
-              aria-hidden
-              className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded border-2 border-foreground bg-background text-lg group-data-[selected]:border-primary group-data-[selected]:bg-primary group-data-[selected]:text-primary-foreground group-data-[focus-visible]:ring-2 group-data-[focus-visible]:ring-ring"
-            >
-              {rights ? "✓" : ""}
-            </span>
-            <span>
-              {copy.describe.rights}
-              <Req />
-            </span>
+          <Checkbox isSelected={rights} onChange={setRights} isRequired className="min-h-12 gap-3 text-base">
+            {copy.describe.rights}
           </Checkbox>
           {needed.length > 0 && <p className="text-base font-medium">{copy.describe.stillNeeded(needed)}</p>}
-          <BigButton variant="primary" isDisabled={needed.length > 0} onPress={() => void send(details())}>
+          <Button variant="primary" size="large" className="w-full" isDisabled={needed.length > 0} onPress={() => void send(details())}>
             {copy.describe.send}
-          </BigButton>
+          </Button>
         </StepFrame>
       );
     }
@@ -136,14 +130,14 @@ export function SendPhoto({ sender }: { sender: Sender }) {
           {file && <Chosen file={file} compact />}
           <Progress stage={stage} />
           {stage.step === "failed" && stage.reason === "failed" && (
-            <BigButton variant="primary" onPress={() => void send(details())}>
+            <Button variant="primary" size="large" className="w-full" onPress={() => void send(details())}>
               {copy.sending.tryAgain}
-            </BigButton>
+            </Button>
           )}
           {stage.step === "failed" && stage.reason === "not_a_photo" && (
-            <BigButton variant="secondary" onPress={startOver}>
+            <Button variant="secondary" size="large" className="w-full" onPress={startOver}>
               {copy.sending.remove}
-            </BigButton>
+            </Button>
           )}
         </StepFrame>
       );
@@ -170,20 +164,7 @@ function Progress({ stage }: { stage: Extract<Stage, { step: "sending" | "failed
         {label}
       </p>
       {sending && (
-        <ProgressBar value={stage.percent} aria-label={copy.sending.sending} className="flex flex-col gap-1">
-          {({ percentage }) => (
-            <>
-              <div className="h-3 w-full overflow-hidden rounded-full bg-secondary">
-                <div className="h-full bg-primary" style={{ width: `${percentage}%` }} />
-              </div>
-              {stage.phase === "sending" && (
-                <span aria-hidden className="text-sm text-muted-foreground">
-                  {copy.sending.sending} {Math.round(percentage ?? 0)}%
-                </span>
-              )}
-            </>
-          )}
-        </ProgressBar>
+        <ProgressBar value={stage.percent} aria-label={copy.sending.sending} showValueText={stage.phase === "sending"} />
       )}
     </div>
   );
@@ -231,9 +212,9 @@ function Done({ onMore }: { onMore: () => void }) {
       </h2>
       <p className="text-lg">{copy.done.next}</p>
       <p className="text-lg">{copy.done.nothingElse}</p>
-      <BigButton variant="secondary" onPress={onMore}>
+      <Button variant="secondary" size="large" className="w-full" onPress={onMore}>
         {copy.done.more}
-      </BigButton>
+      </Button>
     </section>
   );
 }
