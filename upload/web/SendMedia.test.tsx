@@ -1090,4 +1090,104 @@ describe("changing any single one (step 3, optional)", () => {
     expect(starts[1]!.items![key]).toEqual({ location: "Shop", caption: "Busy day" });
     expect(screen.getByRole("heading", { level: 2, name: "Sending" })).toBeInTheDocument();
   });
+
+  const backButton = () => screen.getByRole("button", { name: "Back" });
+  const captionBox = () => screen.getByRole("textbox", { name: "Anything else we should know?" });
+
+  it("goes Back to Step 2 keeping every answer, with focus on its heading, and returns with the changes still marked", async () => {
+    const { sender, starts, calls } = fakeSender();
+    const user = await toStep3(sender, [photo("a.jpg"), photo("b.jpg")], async (u) => {
+      await choose(u, /Where were they taken\?/, "Shop");
+    });
+    await open(user, "b.jpg");
+    const title = inDialog().getByRole("textbox", { name: "What are these?" });
+    await user.clear(title);
+    await user.type(title, "My jack plane");
+    await user.click(inDialog().getByRole("button", { name: "Done" }));
+
+    await user.click(backButton());
+
+    expect(screen.getByText("Step 2 of 4")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Tell us about them" })).toHaveFocus();
+    expect(titleBox()).toHaveValue("Dovetail class, May 3");
+    expect(screen.getByRole("button", { name: /What was the occasion\?/ })).toHaveTextContent("Classes & Workshops");
+    expect(screen.getByRole("checkbox", { name: "Finished Piece" })).toBeChecked();
+    expect(screen.getByRole("button", { name: /Where were they taken\?/ })).toHaveTextContent("Shop");
+    expect(rightsBox()).toBeChecked();
+    expect(nextButton()).toBeEnabled();
+    expect(starts).toHaveLength(0);
+
+    await user.click(nextButton());
+
+    expect(screen.getByRole("heading", { level: 2, name: "Change any single one (optional)" })).toHaveFocus();
+    expect(tile("b.jpg")).toHaveAccessibleName("Change details for b.jpg (Changed)");
+    expect(tile("a.jpg")).toHaveAccessibleName("Change details for a.jpg");
+    await open(user, "b.jpg");
+    expect(inDialog().getByRole("textbox", { name: "What are these?" })).toHaveValue("My jack plane");
+    await user.click(inDialog().getByRole("button", { name: "Done" }));
+
+    await user.click(sendButton());
+    await act(async () => {});
+    const key = calls.find((c) => c.file.name === "b.jpg")!.item;
+    expect(starts[0]!.items).toEqual({ [key]: { title: "My jack plane" } });
+    expect(starts[0]!).toMatchObject({ rightsConfirmed: true, details: { title: "Dovetail class, May 3", location: "Shop" } });
+  });
+
+  it("after Back, one's own changed answer stays its own, and its unchanged ones follow a new Step 2 answer", async () => {
+    const { sender, starts, calls } = fakeSender();
+    const user = await toStep3(sender, [photo("a.jpg"), photo("b.jpg")]);
+    await open(user, "b.jpg");
+    const title = inDialog().getByRole("textbox", { name: "What are these?" });
+    await user.clear(title);
+    await user.type(title, "My jack plane");
+    await user.click(inDialog().getByRole("button", { name: "Done" }));
+
+    await user.click(backButton());
+    await user.clear(titleBox());
+    await user.type(titleBox(), "Hand tool class");
+    await user.type(captionBox(), "Second day");
+    await user.click(nextButton());
+
+    expect(tile("b.jpg")).toHaveAccessibleName("Change details for b.jpg (Changed)");
+    expect(tile("a.jpg")).toHaveAccessibleName("Change details for a.jpg");
+    await open(user, "b.jpg");
+    expect(inDialog().getByRole("textbox", { name: "What are these?" })).toHaveValue("My jack plane");
+    expect(inDialog().getByRole("textbox", { name: "Anything else we should know?" })).toHaveValue("Second day");
+    await user.click(inDialog().getByRole("button", { name: "Done" }));
+    await open(user, "a.jpg");
+    expect(inDialog().getByRole("textbox", { name: "What are these?" })).toHaveValue("Hand tool class");
+    await user.click(inDialog().getByRole("button", { name: "Done" }));
+
+    await user.click(sendButton());
+    await act(async () => {});
+    const key = calls.find((c) => c.file.name === "b.jpg")!.item;
+    expect(starts[0]!.details).toMatchObject({ title: "Hand tool class", caption: "Second day" });
+    expect(starts[0]!.items).toEqual({ [key]: { title: "My jack plane" } });
+  });
+
+  it("a box typed back to the Step 2 answer is not Changed, so after Back it follows a new Step 2 answer", async () => {
+    const { sender, starts } = fakeSender();
+    const user = await toStep3(sender, [photo("a.jpg")], async (u) => {
+      await u.type(captionBox(), "Day one");
+    });
+    await open(user, "a.jpg");
+    const caption = inDialog().getByRole("textbox", { name: "Anything else we should know?" });
+    await user.clear(caption);
+    await user.type(caption, "Day one");
+    await user.click(inDialog().getByRole("button", { name: "Done" }));
+    expect(tile("a.jpg")).toHaveAccessibleName("Change details for a.jpg");
+
+    await user.click(backButton());
+    await user.clear(captionBox());
+    await user.type(captionBox(), "Day two");
+    await user.click(nextButton());
+
+    expect(tile("a.jpg")).toHaveAccessibleName("Change details for a.jpg");
+    await open(user, "a.jpg");
+    expect(inDialog().getByRole("textbox", { name: "Anything else we should know?" })).toHaveValue("Day two");
+    await user.click(inDialog().getByRole("button", { name: "Done" }));
+    await user.click(sendButton());
+    expect(starts[0]).not.toHaveProperty("items");
+    expect(starts[0]!.details.caption).toBe("Day two");
+  });
 });

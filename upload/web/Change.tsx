@@ -6,6 +6,7 @@
 // single one can never blank a field Step 2 filled in. A changed one shows a
 // Changed badge, which goes again when its answers match Step 2's. The
 // rights confirmation is not asked here: it is given once for everything.
+// Back returns to Step 2 with everything kept; see SendMedia's `back`.
 import { useEffect, useRef, useState } from "react";
 import { Button, Dialog, Modal, ModalOverlay } from "@sdwa/components";
 import { changedFields, DETAIL_FIELDS, type Changes, type DetailField, type Details, type Options } from "../shared/details.ts";
@@ -42,6 +43,7 @@ export function Change({
   startFailed,
   busy,
   onSend,
+  onBack,
   focusHeading,
 }: {
   items: Chosen[];
@@ -57,6 +59,8 @@ export function Change({
   startFailed: boolean;
   busy: boolean;
   onSend: () => void;
+  /** Back to Step 2, keeping every answer and every change made here. */
+  onBack: () => void;
   focusHeading: boolean;
 }) {
   const [open, setOpen] = useState<Chosen>();
@@ -117,6 +121,9 @@ export function Change({
       )}
       <Button variant="primary" className="w-full" isDisabled={busy} onPress={onSend}>
         {copy.change.send}
+      </Button>
+      <Button variant="secondary" className="w-full" isDisabled={busy} onPress={onBack}>
+        {copy.change.back}
       </Button>
 
       <ModalOverlay

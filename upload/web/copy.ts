@@ -135,6 +135,9 @@ export const copy = {
     remove: "Remove this one",
     changed: "Changed",
     send: "Send them",
+    // Not on #31 (#57): back from Step 3 to Step 2, keeping every answer and
+    // every change. Needs a read-through.
+    back: "Back",
     // Not on #31 (#57): the tile's and the dialog's names, from the
     // prototype's "Change details for ...". The tile's says when it is
     // changed, as its badge does. Needs a read-through.

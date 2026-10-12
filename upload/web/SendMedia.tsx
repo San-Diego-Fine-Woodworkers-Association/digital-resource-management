@@ -106,6 +106,25 @@ export function SendMedia({ sender }: { sender: Sender }) {
     setChanges((c) => ({ ...c, [key]: next }));
   };
 
+  // Back from Step 3 to Step 2 keeps everything: the Step 2 answers, the
+  // rights tick and each one's changes. Each one keeps only the fields it
+  // actually changes (an override); every other field follows Step 2, so a
+  // Step 2 answer edited after Back reaches every one that didn't change it.
+  // A box the member typed back to the Step 2 answer is dropped here, so it
+  // isn't pinned to the old answer without a Changed badge saying so.
+  const back = () => {
+    setChanges((c) => {
+      const kept: Record<string, Changes> = {};
+      for (const [key, itemChanges] of Object.entries(c)) {
+        const fields = changedFields(details, itemChanges);
+        if (fields.length > 0) kept[key] = Object.fromEntries(fields.map((f) => [f, itemChanges[f]]));
+      }
+      return kept;
+    });
+    setStartFailed(false);
+    go("describe");
+  };
+
   const loadOptions = () => {
     setOptions({ status: "loading" });
     sender
@@ -316,6 +335,7 @@ export function SendMedia({ sender }: { sender: Sender }) {
           startFailed={startFailed}
           busy={starting}
           onSend={() => void send()}
+          onBack={back}
           focusHeading={moved}
         />
       );
