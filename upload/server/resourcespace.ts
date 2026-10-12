@@ -138,7 +138,11 @@ export function createResourceSpace(config: Config): ResourceSpace {
         // fails with a PHP warning (image_processing.php reads
         // $_REQUEST['file_name'], which only its own upload page sends);
         // found against a real instance while building #53.
-        signedUrl(fn, { ref, no_exif: "", revert: 0 }),
+        // autorotate: phones store pixels sideways plus an EXIF Orientation
+        // tag, and RS only applies it (to JPEG, TIFF and PNG) when asked; its
+        // own upload page asks by default. Without it, previews come out
+        // rotated (#71).
+        signedUrl(fn, { ref, no_exif: "", revert: 0, autorotate: 1 }),
         "POST",
         {
           "content-type": `multipart/form-data; boundary=${boundary}`,

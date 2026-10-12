@@ -129,6 +129,16 @@ describe("sending one photo", () => {
     expect(up.params.get("no_exif")).toBe("");
   });
 
+  it("asks ResourceSpace to turn the photo upright from its camera orientation", async () => {
+    h = await startHarness();
+    h.auth.respond = member();
+
+    await finish(await upload(jpeg()));
+
+    const up = h.fakeRs.calls.find((c) => c.fn === "upload_multipart")!;
+    expect(up.params.get("autorotate")).toBe("1");
+  });
+
   it("names the file date-less slug, Submission code and Item number, with the detected extension", async () => {
     h = await startHarness();
     h.auth.respond = member();
