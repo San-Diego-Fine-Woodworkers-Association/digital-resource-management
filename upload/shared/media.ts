@@ -74,7 +74,15 @@ export function detectType(head: Uint8Array): DetectedType | undefined {
  * Why a file cannot be added. Each has its own plain reason on the page, and
  * the service answers with the same words as its `error`.
  */
-export type Refusal = "wrong_type" | "too_big" | "too_many" | "too_many_videos" | "too_much_in_all";
+export type Refusal =
+  | "wrong_type"
+  | "too_big"
+  | "too_many"
+  | "too_many_videos"
+  | "too_much_in_all"
+  // The member's daily quotas (#23, #60): only the service knows these.
+  | "too_many_today"
+  | "too_much_today";
 
 /** What a Submission already holds. */
 export interface Tally {
@@ -101,8 +109,28 @@ export function checkRoom(kind: MediaKind | undefined, size: number, tally: Tall
   return undefined;
 }
 
-const REFUSALS: readonly string[] = ["wrong_type", "too_big", "too_many", "too_many_videos", "too_much_in_all"];
+const REFUSALS: readonly string[] = [
+  "wrong_type",
+  "too_big",
+  "too_many",
+  "too_many_videos",
+  "too_much_in_all",
+  "too_many_today",
+  "too_much_today",
+];
 
 export function isRefusal(value: unknown): value is Refusal {
   return typeof value === "string" && REFUSALS.includes(value);
+}
+
+/**
+ * The service cannot take a file just now, though it will later: the staging
+ * volume is full (`busy`), ResourceSpace or the auth service is not
+ * answering, too many requests, or the member already has as much going as
+ * they may (#60). Unlike a Refusal, trying again later works.
+ */
+const BUSY = ["busy", "unavailable", "auth_unavailable", "rate_limited", "too_many_at_once", "too_much_staged"];
+
+export function isBusy(value: unknown): boolean {
+  return typeof value === "string" && BUSY.includes(value);
 }

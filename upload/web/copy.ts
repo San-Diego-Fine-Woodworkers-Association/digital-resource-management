@@ -41,6 +41,13 @@ function refusalReason(refusal: Refusal, kind: MediaKind | undefined, size: numb
       return "That's the most videos we can take at once (10). Send this one next time.";
     case "too_much_in_all":
       return "That's as much as we can take at once (4 GB in all). Send this one next time.";
+    // Not on #31 (#60): a member's daily quotas, 100 photos and videos or
+    // 10 GB in 24 hours. In the same pattern, without the numbers (they can
+    // be tuned). Needs a read-through.
+    case "too_many_today":
+      return "That's the most we can take from you in one day. Please send this one tomorrow.";
+    case "too_much_today":
+      return "That's as much as we can take from you in one day. Please send this one tomorrow.";
   }
 }
 
@@ -165,6 +172,11 @@ export const copy = {
     tryAgain: "Try again",
     cannotAdd: (reason: string) => `Can't be added: ${reason}`,
     remove: "Remove",
+    // Not on #31 as an Item line (#60): the service is full or not answering,
+    // or the member has as much going as they may. #31's "We're busy right
+    // now. We'll keep trying for a few minutes." needs the automatic retries
+    // (#59); until then the member tries again. Needs a read-through.
+    busy: "We're busy right now. Please try again in a few minutes.",
   },
 
   done: {

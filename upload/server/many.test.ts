@@ -123,7 +123,11 @@ describe("sending many photos and videos at once", () => {
     const c = client(h);
     const submission = await c.startSubmission();
 
-    const ids = await Promise.all([jpeg(), png(), heic(), mp4()].map((d) => c.upload(d, { submission })));
+    // Two at a time, as the page sends them (a member may have no more going at once, #60).
+    const ids = [
+      ...(await Promise.all([jpeg(), png()].map((d) => c.upload(d, { submission })))),
+      ...(await Promise.all([heic(), mp4()].map((d) => c.upload(d, { submission })))),
+    ];
     for (const id of ids) expect((await c.finish(id)).status).toBe(200);
 
     const numbers = items().map((i) => /-(\d{3})\.\w+$/.exec(i.file!.name)![1]).sort();
@@ -250,8 +254,16 @@ describe("each limit has its own reason, and the rest of the Submission carries 
   it("the reasons are all different", async () => {
     const { REFUSAL_STATUS } = await import("./uploads.ts");
     const reasons = Object.keys(REFUSAL_STATUS);
-    expect(new Set(reasons).size).toBe(5);
-    expect(reasons.sort()).toEqual(["too_big", "too_many", "too_many_videos", "too_much_in_all", "wrong_type"]);
+    expect(new Set(reasons).size).toBe(7);
+    expect(reasons.sort()).toEqual([
+      "too_big",
+      "too_many",
+      "too_many_today",
+      "too_many_videos",
+      "too_much_in_all",
+      "too_much_today",
+      "wrong_type",
+    ]);
   });
 
   it("a refused file gives its room back", async () => {

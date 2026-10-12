@@ -12,6 +12,13 @@
 //   /upload/health         staging usage and ResourceSpace reachability
 //
 // Traefik routes only /upload here; ResourceSpace keeps everything else.
+//
+// Protecting the service (#60): every request but the built files counts
+// against its address's rate limit, and every API call against the member's
+// too (ratelimit.ts); uploads count against the member's quotas (quotas.ts)
+// and the staging cap (staging.ts); no new Submission or upload is taken
+// while ResourceSpace is not answering; and staging is swept at startup and
+// every hour.
 import http from "node:http";
 import { readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
@@ -19,13 +26,16 @@ import path from "node:path";
 import { BOOT_ELEMENT_ID, type Boot } from "../shared/boot.ts";
 import { createAuditLog, stdoutSink, type AuditEvent, type AuditSink } from "./audit.ts";
 import type { Config } from "./config.ts";
-import { checkHealth } from "./health.ts";
+import { checkHealth, createReachability } from "./health.ts";
 import { checkDetails, checkItems, type Options } from "../shared/details.ts";
 import { createItems, type HandOffRequest, type HandOffResult } from "./items.ts";
 import { rightsRecord } from "./naming.ts";
 import { createLiveOptions } from "./options.ts";
+import { createQuotas } from "./quotas.ts";
+import { addressKey, clientIp, createRateLimiter } from "./ratelimit.ts";
 import { createResourceSpace } from "./resourcespace.ts";
 import { checkSession, displayName, isEntitled, type Session, type SessionUser } from "./session.ts";
+import { createStaging, type SweepReport, type VolumeStatsOf } from "./staging.ts";
 import { createSubmissions } from "./submissions.ts";
 import { createUploads, FILES_PATH, REFUSAL_STATUS } from "./uploads.ts";
 
@@ -35,7 +45,20 @@ export interface ServiceOptions {
   log?: (message: string, fields?: Record<string, unknown>) => void;
   /** The pause before the first read-back retry (items.ts); tests shorten it. */
   readBackRetryDelayMs?: number;
+  /** The clock every quota, rate limit and the sweep go by; tests move it on instead of waiting. */
+  now?: () => number;
+  /** How full the staging volume is; tests fake it. */
+  stagingStats?: VolumeStatsOf;
 }
+
+export interface Service extends http.Server {
+  /** Done once staging has been cleaned up after a restart; requests wait for it. */
+  ready: Promise<void>;
+  /** Sweeps staging now (it also runs every hour). */
+  sweep(): Promise<SweepReport>;
+}
+
+const SWEEP_EVERY_MS = 60 * 60 * 1000;
 
 const BASE = "/upload";
 
@@ -138,6 +161,9 @@ function securityHeaders(res: http.ServerResponse) {
   res.setHeader("Referrer-Policy", "same-origin");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Content-Security-Policy", CSP);
+  // Nothing here is for other sites to load or keep a window handle on (#60 review).
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
 }
 
 function sendJson(res: http.ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
@@ -166,17 +192,23 @@ function scriptSafeJson(value: unknown): string {
     .replace(/&/g, "\\u0026");
 }
 
-export function createService(config: Config, options: ServiceOptions = {}): http.Server {
+export function createService(config: Config, options: ServiceOptions = {}): Service {
   const audit = createAuditLog(options.auditSink ?? stdoutSink);
   const rsConfigured = config.rsApiKey !== "";
   const log =
     options.log ??
     ((message: string, fields: Record<string, unknown> = {}) =>
       process.stderr.write(JSON.stringify({ time: new Date().toISOString(), message, ...fields }) + "\n"));
+  const now = options.now ?? Date.now;
   const rs = createResourceSpace(config);
   const liveOptions = createLiveOptions(rs);
-  const submissions = createSubmissions(config.limits, { dir: config.stagingDir });
-  const uploads = createUploads(config, submissions);
+  const reachability = createReachability(config, now);
+  const staging = createStaging({ dir: config.stagingDir, capPercent: config.stagingCapPercent, stats: options.stagingStats, now, log });
+  const quotas = createQuotas(config.quotas, now);
+  const perUser = createRateLimiter(config.rateLimits.user, now);
+  const perAddress = createRateLimiter(config.rateLimits.ip, now);
+  const submissions = createSubmissions(config.limits, { dir: config.stagingDir, now });
+  const uploads = createUploads(config, submissions, { staging, quotas });
   const items = createItems(config, {
     uploads,
     submissions,
@@ -184,7 +216,26 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
     options: liveOptions,
     log,
     retryDelayMs: options.readBackRetryDelayMs,
+    now: () => new Date(now()),
   });
+
+  // What a sweep removes stops counting against its member and Submission.
+  const sweep = (startup = false) =>
+    staging.sweep({
+      startup,
+      inUse: (id) => submissions.inUse(id),
+      onRemoved: (u) => {
+        quotas.removed(u.id);
+        submissions.release(u.submissionId, u.id);
+      },
+    });
+  // After a restart: clear what was left, and count what stays against its member again.
+  const ready = sweep(true).then(
+    (report) => {
+      for (const u of report.uploads) quotas.restore(u.owner, u.id, u.size, u.offset);
+    },
+    (err: unknown) => log("could not clean up staging at startup", { error: err instanceof Error ? err.message : String(err) }),
+  );
 
   const webRoot = path.resolve(config.webRoot);
   const indexHtml = readFileSync(path.join(webRoot, "index.html"), "utf8");
@@ -242,6 +293,8 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
     // Without its ResourceSpace key the service cannot take anything: say so
     // plainly rather than let a member pick photos that cannot be sent.
     if (!rsConfigured) return sendPage(res, 503, { screen: "unavailable" }, { "Retry-After": "300" });
+    // Nor while ResourceSpace is not answering (#30): nothing could be sent.
+    if (!(await reachability.reachable())) return sendPage(res, 503, { screen: "unavailable" }, { "Retry-After": "30" });
     return sendPage(res, 200, { screen: "app", user, signOutUrl });
   }
 
@@ -254,14 +307,13 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
     // headers alone. When a write is refused, the connection is closed rather
     // than draining a body we will never use.
     const record = (outcome: string, user?: SessionUser, extra: Partial<AuditEvent> = {}) => {
-      const forwarded = req.headers["x-forwarded-for"];
       audit.record({
         event: "upload_request",
         outcome,
         method,
         path: url.pathname,
         user,
-        ip: (typeof forwarded === "string" ? forwarded.slice(0, 200) : undefined) ?? req.socket.remoteAddress,
+        ip: clientIp(req),
         ...extra,
       });
     };
@@ -292,6 +344,10 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
     if (!isEntitled(s.user)) {
       return answer(403, { error: "not_member", renewUrl: config.renewUrl, signOutUrl }, "not_member", s.user);
     }
+    const limited = perUser.take(s.user.id);
+    if (limited) {
+      return answer(429, { error: "rate_limited" }, "rate_limited", s.user, { "Retry-After": String(limited.retryAfterS) });
+    }
 
     const route = url.pathname.slice(`${BASE}/api`.length);
     if (route === "/session" && (method === "GET" || method === "HEAD")) {
@@ -312,11 +368,17 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
       log("refusing uploads: RS_UPLOADER_API_KEY is not set");
       return answer(503, { error: "unavailable" }, "not_configured", s.user, { "Retry-After": "300" });
     }
+    // No new Submission or upload while ResourceSpace is not answering: it
+    // could not be handed over, and would only pile up on staging (#23).
+    const isNew = method === "POST" && (isSubmissions || url.pathname === FILES_PATH || url.pathname === `${FILES_PATH}/`);
+    if (isNew && !(await reachability.reachable())) {
+      return answer(503, { error: "unavailable" }, "rs_unreachable", s.user, { "Retry-After": "30" });
+    }
     if (isFiles) {
-      const { createdId } = await uploads.handle(req, res, s.user);
+      const { createdId, refusal } = await uploads.handle(req, res, s.user);
       // One audit line when an upload starts, not one per chunk.
       if (method === "POST") {
-        record(createdId ? "created" : `refused_${res.statusCode}`, s.user, { uploadId: createdId });
+        record(createdId ? "created" : (refusal ?? `refused_${res.statusCode}`), s.user, { uploadId: createdId });
       }
       return;
     }
@@ -391,6 +453,11 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
       return answer(422, { error: "invalid_details", problems: checked.problems, options: await liveOptions.get() }, "invalid_details", user);
     }
 
+    // Each leaves a small record on staging until the sweep: a day's worth at most.
+    const quota = quotas.startSubmission(user.id);
+    if ("refusal" in quota) {
+      return answer(429, { error: quota.refusal }, quota.refusal, user, { "Retry-After": String(quota.retryAfterS) });
+    }
     const record = await submissions.create(user, {
       expectedItems,
       details: checked.details,
@@ -507,24 +574,44 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
     const p = url.pathname;
 
     if (p !== BASE && !p.startsWith(`${BASE}/`)) return notFound(res);
-    if (p === `${BASE}/health`) {
-      const health = await checkHealth(config, rsConfigured);
-      return sendJson(res, health.status === "ok" ? 200 : 503, health);
-    }
-    if (p === `${BASE}/api` || p.startsWith(`${BASE}/api/`)) return api(req, res, url);
+    const isHealth = p === `${BASE}/health`;
+    const isApi = p === `${BASE}/api` || p.startsWith(`${BASE}/api/`);
     if (p.startsWith(`${BASE}/assets/`)) {
       if (!(await staticFile(req, res, url))) notFound(res);
       return;
     }
-    if (await staticFile(req, res, url)) return;
+    if (!isHealth && !isApi && (await staticFile(req, res, url))) return;
+
+    // Everything from here asks the auth service or ResourceSpace something,
+    // so it counts against the address's allowance (the built files do not).
+    const limited = perAddress.take(addressKey(clientIp(req)));
+    if (limited) {
+      const headers = { "Retry-After": String(limited.retryAfterS), Connection: "close" };
+      if (isHealth || isApi) return sendJson(res, 429, { error: "rate_limited" }, headers);
+      return sendPage(res, 429, { screen: "unavailable" }, headers);
+    }
+    if (isHealth) {
+      const health = await checkHealth(config, rsConfigured, { reachability, stats: options.stagingStats });
+      return sendJson(res, health.status === "ok" ? 200 : 503, health);
+    }
+    if (isApi) {
+      await ready;
+      return api(req, res, url);
+    }
     return page(req, res, url);
   }
 
-  return http.createServer((req, res) => {
+  const server = http.createServer((req, res) => {
     handle(req, res).catch((err: unknown) => {
       log("request failed", { error: err instanceof Error ? err.message : String(err) });
       if (!res.headersSent) sendJson(res, 500, { error: "internal" }, { Connection: "close" });
       else res.destroy();
     });
   });
+  const timer = setInterval(() => {
+    sweep().catch((err: unknown) => log("staging sweep failed", { error: err instanceof Error ? err.message : String(err) }));
+  }, SWEEP_EVERY_MS);
+  timer.unref();
+  server.on("close", () => clearInterval(timer));
+  return Object.assign(server, { ready, sweep: () => sweep() });
 }

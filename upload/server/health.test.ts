@@ -49,6 +49,29 @@ describe("the health endpoint", () => {
     expect(h.rs.seen[0]!.headers["x-forwarded-proto"]).toBe("https");
   });
 
+  // Anyone may call it: it must not be a way to keep ResourceSpace busy (#60).
+  it("asks ResourceSpace at most every 15 seconds, however often it is called", async () => {
+    h = await startHarness();
+
+    await Promise.all([health(), health(), health()]);
+    await health();
+    expect(h.rs.seen).toHaveLength(1);
+
+    h.advance(15_000);
+    await health();
+    expect(h.rs.seen).toHaveLength(2);
+  });
+
+  it("notices ResourceSpace coming back within seconds", async () => {
+    h = await startHarness();
+    h.rs.respond = () => ({ status: 500, body: "" });
+    expect((await health()).status).toBe(503);
+
+    h.rs.respond = () => ({ status: 200, body: "" });
+    h.advance(5_000);
+    expect((await health()).status).toBe(200);
+  });
+
   it("counts a redirect or a login page from ResourceSpace as reachable", async () => {
     h = await startHarness();
     h.rs.respond = () => ({ status: 302, body: "" });

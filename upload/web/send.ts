@@ -7,7 +7,7 @@
 import Uppy from "@uppy/core";
 import Tus from "@uppy/tus";
 import type { Changes, Details, FieldProblem, ItemProblem, Options } from "../shared/details.ts";
-import { isRefusal, type Refusal } from "../shared/media.ts";
+import { isBusy, isRefusal, type Refusal } from "../shared/media.ts";
 
 /** What starts a Submission: how many will be sent, the Step 2 answers and the rights confirmation. */
 export interface Start {
@@ -41,10 +41,11 @@ export type SendResult =
   | { ok: true }
   /**
    * A Refusal: the service will not take this file (it looked inside, or the
-   * Submission has no room); sending it again will not help. failed:
+   * Submission has no room); sending it again will not help. busy: the
+   * service cannot take it just now (#60); trying again later will. failed:
    * anything else; trying again may work.
    */
-  | { ok: false; reason: Refusal | "failed" };
+  | { ok: false; reason: Refusal | "busy" | "failed" };
 
 export interface Submission {
   /**
@@ -76,12 +77,12 @@ const POLL_EVERY_MS = 3000;
 /** Asks in a row that may go unanswered (a blip in the connection) before it counts as failed: about a minute. */
 const POLL_MISSES = 20;
 
-/** The service's reason for refusing a file, from a JSON `{error}` body, if it gave one. */
-function refusalIn(body: unknown): Refusal | undefined {
+/** The service's reason for refusing a file, or that it is busy, from a JSON `{error}` body, if it gave one. */
+function refusalIn(body: unknown): Refusal | "busy" | undefined {
   if (typeof body !== "string") return undefined;
   try {
     const error = (JSON.parse(body) as { error?: unknown }).error;
-    return isRefusal(error) ? error : undefined;
+    return isRefusal(error) ? error : isBusy(error) ? "busy" : undefined;
   } catch {
     return undefined;
   }
@@ -141,7 +142,7 @@ function createSubmission(submissionId: string): Submission {
   });
 
   // Why the service refused an upload when it started, by Uppy file id.
-  const refused = new Map<string, Refusal>();
+  const refused = new Map<string, Refusal | "busy">();
   uppy.on("upload-error", (file, error, response) => {
     const original = (error as { originalResponse?: { getBody?: () => unknown } } | undefined)?.originalResponse;
     const body = original?.getBody?.() ?? (response?.body as { xhr?: XMLHttpRequest } | undefined)?.xhr?.responseText;
@@ -155,7 +156,7 @@ function createSubmission(submissionId: string): Submission {
   let added = 0;
 
   /** The upload id once the whole file has arrived, the reason the service refused it, or nothing (it may work next time). */
-  async function upload(file: File, onProgress: (p: number) => void): Promise<{ uploadId: string } | { refusal: Refusal } | undefined> {
+  async function upload(file: File, onProgress: (p: number) => void): Promise<{ uploadId: string } | { refusal: Refusal | "busy" } | undefined> {
     const known = sending.get(file);
     if (known?.uploadId) return { uploadId: known.uploadId };
     let entry = known;

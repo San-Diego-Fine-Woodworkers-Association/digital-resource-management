@@ -45,6 +45,8 @@ type ItemState =
   | { status: "finishing" }
   | { status: "sent" }
   | { status: "failed" }
+  /** The service can't take it just now (#60); trying again later works. */
+  | { status: "busy" }
   | { status: "refused"; refusal: Refusal };
 
 function counts(items: Chosen[]) {
@@ -159,7 +161,11 @@ export function SendMedia({ sender }: { sender: Sender }) {
         inFlight.current.delete(item.key);
         setState(
           item.key,
-          result.ok ? { status: "sent" } : result.reason === "failed" ? { status: "failed" } : { status: "refused", refusal: result.reason },
+          result.ok
+            ? { status: "sent" }
+            : result.reason === "failed" || result.reason === "busy"
+              ? { status: result.reason }
+              : { status: "refused", refusal: result.reason },
         );
       });
   }
@@ -385,6 +391,7 @@ function ItemRow({
     finishing: item.kind === "video" ? copy.sending.finishingVideo : copy.sending.finishing,
     sent: copy.sending.sent,
     failed: copy.sending.couldNotSave,
+    busy: copy.sending.busy,
     refused:
       state.status === "refused"
         ? copy.sending.cannotAdd(copy.choose.reason(state.refusal, item.kind, item.file.size))
@@ -402,7 +409,7 @@ function ItemRow({
         {state.status === "sending" && <ProgressBar value={state.percent} aria-label={item.file.name} />}
         {/* Still moving while ResourceSpace makes a video's previews, so it never looks stuck (#55). */}
         {state.status === "finishing" && <ProgressBar isIndeterminate aria-label={item.file.name} />}
-        {state.status === "failed" && (
+        {(state.status === "failed" || state.status === "busy") && (
           <Button variant="primary" className="w-full" onPress={onTryAgain}>
             {copy.sending.tryAgain}
           </Button>

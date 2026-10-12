@@ -91,4 +91,15 @@ describe("handing an arrived file over", () => {
     service(json(415, { error: "wrong_type" }));
     expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: false, reason: "wrong_type" });
   });
+
+  it.each([
+    ["rate_limited", 429],
+    ["busy", 503],
+    ["unavailable", 503],
+    ["too_many_at_once", 429],
+    ["too_much_staged", 429],
+  ])("says the service is busy when it answers %s (#60)", async (error, status) => {
+    service(json(status, { error }));
+    expect(await handOver(ID, 1)).toEqual({ ok: false, reason: "busy" });
+  });
 });

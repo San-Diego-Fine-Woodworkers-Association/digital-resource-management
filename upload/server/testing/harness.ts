@@ -10,7 +10,8 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { loadConfig } from "../config.ts";
-import { createService } from "../app.ts";
+import { createService, type Service } from "../app.ts";
+import { statVolume, type SweepReport, type VolumeStats } from "../staging.ts";
 import { createFakeResourceSpace, FAKE_RS_KEY, FAKE_RS_USER, type FakeResourceSpace } from "./fake-rs.ts";
 
 export const PUBLIC_BASE_URL = "https://media.example.org";
@@ -125,6 +126,14 @@ export interface Harness {
   auditLines: string[];
   /** The service's operational log, one entry per message. */
   logLines: { message: string; fields?: Record<string, unknown> }[];
+  /** Moves the service's clock on (quotas, rate limits, the sweep), instead of waiting. */
+  advance: (ms: number) => void;
+  /** When set, how full the staging volume says it is; otherwise the real figures. */
+  volume?: VolumeStats;
+  /** Runs the staging sweep now. */
+  sweep: () => Promise<SweepReport>;
+  /** Stops the service and starts it again on the same staging volume, as a redeploy does. */
+  restart: () => Promise<void>;
   close: () => Promise<void>;
 }
 
@@ -158,30 +167,51 @@ export async function startHarness(env: Record<string, string> = {}): Promise<Ha
     RS_UPLOADER_API_KEY: FAKE_RS_KEY,
     ...env,
   });
-  const service = createService(config, {
-    auditSink: (line) => auditLines.push(line),
-    log: (message, fields) => logLines.push({ message, fields }),
-    readBackRetryDelayMs: 1,
-  });
-  await new Promise<void>((resolve) => service.listen(0, "127.0.0.1", resolve));
-  const url = `http://127.0.0.1:${(service.address() as AddressInfo).port}`;
+  let skew = 0;
+  let service: Service;
+  async function start() {
+    service = createService(config, {
+      auditSink: (line) => auditLines.push(line),
+      log: (message, fields) => logLines.push({ message, fields }),
+      readBackRetryDelayMs: 1,
+      // Real time, moved on by `advance`, so the times of files on staging still compare.
+      now: () => Date.now() + skew,
+      stagingStats: async (dir) => h.volume ?? statVolume(dir),
+    });
+    await new Promise<void>((resolve) => service.listen(0, "127.0.0.1", resolve));
+    await service.ready;
+    h.url = `http://127.0.0.1:${(service.address() as AddressInfo).port}`;
+  }
+  async function stop() {
+    service.closeAllConnections();
+    await new Promise<void>((resolve) => service.close(() => resolve()));
+  }
 
-  return {
-    url,
+  const h: Harness = {
+    url: "",
     auth,
     rs,
     fakeRs,
     stagingDir,
     auditLines,
     logLines,
+    advance: (ms) => {
+      skew += ms;
+    },
+    sweep: () => service.sweep(),
+    restart: async () => {
+      await stop();
+      await start();
+    },
     close: async () => {
-      service.closeAllConnections();
-      await new Promise<void>((resolve) => service.close(() => resolve()));
+      await stop();
       await auth.close();
       await rs.close();
       await rm(work, { recursive: true, force: true });
     },
   };
+  await start();
+  return h;
 }
 
 /** A browser-like request: never follows redirects, so tests see them. */
