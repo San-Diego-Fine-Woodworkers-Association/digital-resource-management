@@ -24,6 +24,14 @@ async function stagedBytes(): Promise<string[]> {
   return (await readdir(h.stagingDir)).filter((f) => /^[0-9a-f]{32}$/.test(f));
 }
 
+/** Everything in staging besides the Submissions' small records. */
+async function staged(): Promise<string[]> {
+  return (await readdir(h.stagingDir)).filter((f) => !f.endsWith(".submission.json"));
+}
+
+/** The ResourceSpace calls that change something (reading the choices does not). */
+const writes = () => h.fakeRs.calls.filter((c) => !c.fn.startsWith("get_"));
+
 const items = () => [...h.fakeRs.resources.values()];
 
 describe("starting a Submission", () => {
@@ -141,7 +149,7 @@ describe("each file is checked by its content, not its name", () => {
 
     expect(res.status).toBe(415);
     expect(await res.json()).toEqual({ error: "wrong_type" });
-    expect(h.fakeRs.calls).toHaveLength(0);
+    expect(writes()).toHaveLength(0);
     expect(await stagedBytes()).toEqual([]);
   });
 
@@ -185,7 +193,7 @@ describe("each limit has its own reason, and the rest of the Submission carries 
 
     expect(res.status).toBe(413);
     expect(await res.json()).toEqual({ error: "too_big" });
-    expect(await readdir(h.stagingDir)).toEqual([]);
+    expect(await staged()).toEqual([]);
     expect((await c.finish(await c.upload(mp4(200_000), { submission }))).status).toBe(200);
   });
 
@@ -300,7 +308,7 @@ describe("a Submission belongs to the member who started it", () => {
 
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "not_found" });
-    expect(await readdir(h.stagingDir)).toEqual([]);
+    expect(await staged()).toEqual([]);
   });
 
   it.each([
@@ -313,7 +321,7 @@ describe("a Submission belongs to the member who started it", () => {
     const res = await client(h).create(submission, 1000);
 
     expect(res.status).toBe(404);
-    expect(await readdir(h.stagingDir)).toEqual([]);
+    expect(await staged()).toEqual([]);
   });
 });
 
@@ -334,12 +342,12 @@ describe("the names the member's device gives files", () => {
     const before = await readdir(parent);
 
     const id = await c.upload(jpeg(), { metadata: { filename, filetype: "image/jpeg" } });
-    const staged = await readdir(h.stagingDir);
+    const files = await staged();
     const res = await c.finish(id);
 
     // On disk: only the server's own id, inside staging, and nothing beside it.
     expect(id).toMatch(/^[0-9a-f]{32}$/);
-    expect(staged.every((f) => f.startsWith(id))).toBe(true);
+    expect(files.every((f) => f.startsWith(id))).toBe(true);
     expect(await readdir(parent)).toEqual(before);
     // In ResourceSpace: the File name is the service's own; the device's name
     // is kept only as text, without any path.

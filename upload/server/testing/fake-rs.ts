@@ -11,7 +11,16 @@
 //    false and then stores phone photos sideways (#71), so the fake refuses
 //    an upload that does not ask for it.
 //  - update_field(resource, field, value): `true`, or `false` for a field the
-//    user may not write (here: anything but the proxy's 13 shortnames).
+//    user may not write (here: anything but the proxy's 13 shortnames). For a
+//    list field the value is option names, comma-separated; a name the field
+//    does not have is dropped without a word, but a deactivated one is still
+//    saved (both seen on a real RS 11.0 while building #56).
+//  - get_field_options(ref, nodeinfo): the field's options (ref may be a
+//    shortname); with nodeinfo, objects with `name` and `active`. Deactivated
+//    options are listed too.
+//  - get_resource_field_data(resource): one row per field the user can see,
+//    with `name` (the shortname) and `value`; a checkbox list reads back as
+//    "A, B".
 import { createHash } from "node:crypto";
 import type { FakeReply, SeenRequest } from "./harness.ts";
 
@@ -35,6 +44,43 @@ const WRITABLE_FIELDS = new Set([
   "submitterfilename",
 ]);
 
+/** The live choices, as production has them (#22, scripts/rs-setup/provision.php). */
+export const FAKE_OPTIONS = {
+  programevent: [
+    "Design in Wood (exhibit)",
+    "Holiday Gift Sale",
+    "Old Tool Swap Meet",
+    "Classes & Workshops",
+    "Special Interest Group (SIG) Meeting",
+    "Eye Openers (speaker series)",
+    "Shop / ShopOps",
+    "Community Service",
+    "General Meeting / Membership Event",
+    "Board / Admin",
+    "Marketing & Promotional",
+    "Other / Uncategorized",
+  ],
+  subjecttype: [
+    "Finished Piece",
+    "Work in Progress",
+    "Technique / Process Demo",
+    "Tool or Equipment",
+    "Instruction / Class in Session",
+    "People / Portraits",
+    "Venue / Facility",
+    "Event Candid",
+    "Award / Recognition Moment",
+  ],
+  location: ["Shop", "Design in Wood", "Swap Meet", "Shop Tour"],
+};
+
+const MULTI_FIELDS = new Set(["subjecttype"]);
+
+export interface FakeOption {
+  name: string;
+  active: boolean;
+}
+
 export interface FakeResource {
   ref: number;
   resourceType: number;
@@ -52,6 +98,8 @@ export interface ApiCall {
 
 export interface FakeResourceSpace {
   resources: Map<number, FakeResource>;
+  /** Each list field's options; tests add, deactivate or delete them. */
+  options: Record<string, FakeOption[]>;
   calls: ApiCall[];
   /** Make a call fail: return a reply to send instead, or undefined to go ahead. */
   failWhen: (call: ApiCall) => FakeReply | undefined;
@@ -93,6 +141,9 @@ export function createFakeResourceSpace(): FakeResourceSpace {
   let nextRef = 1000;
   const rs: FakeResourceSpace = {
     resources: new Map(),
+    options: Object.fromEntries(
+      Object.entries(FAKE_OPTIONS).map(([field, names]) => [field, names.map((name) => ({ name, active: true }))]),
+    ),
     calls: [],
     failWhen: () => undefined,
     handle(req) {
@@ -138,8 +189,29 @@ export function createFakeResourceSpace(): FakeResourceSpace {
           const resource = rs.resources.get(Number(params.get("resource")));
           const field = params.get("field") ?? "";
           if (!resource || !WRITABLE_FIELDS.has(field)) return { json: false };
-          resource.fields[field] = params.get("value") ?? "";
+          const value = params.get("value") ?? "";
+          const options = rs.options[field];
+          if (options) {
+            const known = value.split(",").filter((name) => options.some((o) => o.name === name));
+            resource.fields[field] = (MULTI_FIELDS.has(field) ? known : known.slice(0, 1)).join(", ");
+          } else {
+            resource.fields[field] = value;
+          }
           return { json: true };
+        }
+        case "get_field_options": {
+          const options = rs.options[params.get("ref") ?? ""];
+          if (!options) return { json: false };
+          return {
+            json: params.get("nodeinfo") === "1"
+              ? options.map((o, i) => ({ ref: 500 + i, name: o.name, parent: null, order_by: (i + 1) * 10, active: o.active ? 1 : 0 }))
+              : options.map((o) => o.name),
+          };
+        }
+        case "get_resource_field_data": {
+          const resource = rs.resources.get(Number(params.get("resource")));
+          if (!resource) return { json: false };
+          return { json: [...WRITABLE_FIELDS].map((name) => ({ name, value: resource.fields[name] ?? "" })) };
         }
         default:
           return { json: false };

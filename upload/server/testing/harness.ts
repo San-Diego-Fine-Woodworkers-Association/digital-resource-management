@@ -123,6 +123,8 @@ export interface Harness {
   fakeRs: FakeResourceSpace;
   stagingDir: string;
   auditLines: string[];
+  /** The service's operational log, one entry per message. */
+  logLines: { message: string; fields?: Record<string, unknown> }[];
   close: () => Promise<void>;
 }
 
@@ -143,6 +145,7 @@ export async function startHarness(env: Record<string, string> = {}): Promise<Ha
   await writeFile(path.join(work, "secret.txt"), "outside the web root");
 
   const auditLines: string[] = [];
+  const logLines: Harness["logLines"] = [];
   const config = loadConfig({
     PUBLIC_BASE_URL,
     AUTH_BASE_URL: auth.url,
@@ -155,7 +158,11 @@ export async function startHarness(env: Record<string, string> = {}): Promise<Ha
     RS_UPLOADER_API_KEY: FAKE_RS_KEY,
     ...env,
   });
-  const service = createService(config, { auditSink: (line) => auditLines.push(line), log: () => {} });
+  const service = createService(config, {
+    auditSink: (line) => auditLines.push(line),
+    log: (message, fields) => logLines.push({ message, fields }),
+    readBackRetryDelayMs: 1,
+  });
   await new Promise<void>((resolve) => service.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${(service.address() as AddressInfo).port}`;
 
@@ -166,6 +173,7 @@ export async function startHarness(env: Record<string, string> = {}): Promise<Ha
     fakeRs,
     stagingDir,
     auditLines,
+    logLines,
     close: async () => {
       service.closeAllConnections();
       await new Promise<void>((resolve) => service.close(() => resolve()));

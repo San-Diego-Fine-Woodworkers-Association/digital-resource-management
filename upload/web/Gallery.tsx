@@ -119,8 +119,10 @@ export function Gallery({ items, onRemove }: { items: Chosen[]; onRemove: (key: 
         >
           {items.map((item, index) => (
             <li key={item.key} data-key={item.key} className="relative aspect-square">
+              {/* The tile and its ✕ are drawn here, not at the large size. */}
               <Button
                 variant="quiet"
+                size="default"
                 aria-label={copy.choose.seeBigger(item.file.name)}
                 onPress={() => setViewing(item)}
                 className="absolute inset-0 block size-full overflow-hidden rounded-none p-0"
@@ -129,6 +131,7 @@ export function Gallery({ items, onRemove }: { items: Chosen[]; onRemove: (key: 
               </Button>
               <Button
                 variant="quiet"
+                size="default"
                 aria-label={copy.choose.takeOut(item.file.name)}
                 onPress={() => takeOut(index)}
                 className="absolute right-1 top-1 size-12 rounded-full bg-black/75 p-0 text-xl text-white data-[hovered]:bg-black/90"
@@ -157,7 +160,7 @@ export function Gallery({ items, onRemove }: { items: Chosen[]; onRemove: (key: 
               <>
                 <FullSize item={viewing} />
                 <p className="truncate text-center text-base text-muted-foreground">{viewing.file.name}</p>
-                <Button variant="primary" size="large" className="w-full" onPress={() => setViewing(undefined)}>
+                <Button variant="primary" className="w-full" onPress={() => setViewing(undefined)}>
                   {copy.choose.close}
                 </Button>
               </>

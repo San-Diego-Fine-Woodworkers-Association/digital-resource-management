@@ -1,24 +1,15 @@
-// The journey: choose photos and videos (many at once, #54), give them a
-// Title, tick the rights confirmation, Send, thank-you (#53). The full
-// details form (#56), per-Item changes (step 3, #57) and the full set of Item
-// states and retries (#58, #59) build on this.
+// The journey: choose photos and videos (many at once, #54), describe them
+// all once (#56), Send, thank-you (#53). Per-Item changes (step 3, #57) and
+// the full set of Item states and retries (#58, #59) build on this.
 import { useEffect, useRef, useState } from "react";
-import {
-  Button,
-  Checkbox,
-  Description,
-  FilePickerButton,
-  Input,
-  Label,
-  Notification,
-  ProgressBar,
-  TextField,
-} from "@sdwa/components";
+import { Button, FilePickerButton, Notification, ProgressBar } from "@sdwa/components";
+import { NO_DETAILS, type DetailField, type Details } from "../shared/details.ts";
 import type { Refusal } from "../shared/media.ts";
 import { choose, type Chosen, type Refused } from "./choose.ts";
 import { copy } from "./copy.ts";
+import { Describe, type OptionsState } from "./Describe.tsx";
 import { Gallery, Thumb } from "./Gallery.tsx";
-import type { Sender, SendDetails, Submission } from "./send.ts";
+import type { Sender, Submission } from "./send.ts";
 import { StepFrame } from "./ui.tsx";
 
 /**
@@ -64,8 +55,14 @@ export function SendMedia({ sender }: { sender: Sender }) {
   const [step, setStep] = useState<Step>("choose");
   const [chosen, setChosen] = useState<Chosen[]>([]);
   const [refused, setRefused] = useState<Refused[]>([]);
-  const [title, setTitle] = useState("");
+  const [details, setDetails] = useState<Details>(NO_DETAILS);
   const [rights, setRights] = useState(false);
+  // Step 2: the club's lists, fetched when the page loads; choices the
+  // service said are gone; whether Send is starting or could not.
+  const [options, setOptions] = useState<OptionsState>({ status: "loading" });
+  const [gone, setGone] = useState<DetailField[]>([]);
+  const [starting, setStarting] = useState(false);
+  const [startFailed, setStartFailed] = useState(false);
   const [states, setStates] = useState<Record<string, ItemState>>({});
   // Focus follows the member to each new step, but not on first load.
   const [moved, setMoved] = useState(false);
@@ -91,14 +88,27 @@ export function SendMedia({ sender }: { sender: Sender }) {
     setStates(({ [key]: _gone, ...rest }) => rest);
   };
 
-  const details = (): SendDetails => ({ title: title.trim(), rightsConfirmed: true });
+  const loadOptions = () => {
+    setOptions({ status: "loading" });
+    sender
+      .options()
+      .catch(() => ({ ok: false as const }))
+      .then((result) => setOptions(result.ok ? { status: "ready", options: result.options } : { status: "failed" }));
+  };
+  useEffect(loadOptions, [sender]);
+
+  const describe = (next: Details) => {
+    // A field the member changes is no longer marked as gone.
+    setGone((g) => g.filter((f) => JSON.stringify(next[f]) === JSON.stringify(details[f])));
+    setDetails(next);
+  };
 
   function start(item: Chosen) {
     const s = submission.current;
     if (!s) return;
     inFlight.current.add(item.key);
     setState(item.key, { status: "sending", percent: 0 });
-    s.send(item.file, details(), {
+    s.send(item.file, {
       onProgress: (percent) =>
         setStates((all) => (all[item.key]?.status === "sending" ? { ...all, [item.key]: { status: "sending", percent } } : all)),
       onFinishing: () => setState(item.key, { status: "finishing" }),
@@ -124,11 +134,36 @@ export function SendMedia({ sender }: { sender: Sender }) {
     if (chosen.length > 0 && chosen.every((i) => states[i.key]?.status === "sent")) go("done");
   }, [step, chosen, states]);
 
-  function send() {
-    if (step !== "describe") return;
-    submission.current = sender.begin();
-    setStates(Object.fromEntries(chosen.map((i) => [i.key, { status: "waiting" } as ItemState])));
-    go("sending");
+  async function send() {
+    if (step !== "describe" || starting) return;
+    setStarting(true);
+    setStartFailed(false);
+    const result = await sender
+      .begin({ expectedItems: chosen.length, details, rightsConfirmed: true })
+      .catch(() => ({ ok: false as const, reason: "failed" as const }));
+    setStarting(false);
+    if (result.ok) {
+      submission.current = result.submission;
+      setStates(Object.fromEntries(chosen.map((i) => [i.key, { status: "waiting" } as ItemState])));
+      go("sending");
+      return;
+    }
+    if (result.reason === "invalid" && result.problems.some((p) => p.problem === "not_offered")) {
+      // A choice was taken off the club's list after the page loaded: show
+      // the lists as they are now and ask again for what is gone.
+      const now = result.options;
+      if (now) setOptions({ status: "ready", options: now });
+      const fields = result.problems.filter((p) => p.problem === "not_offered").map((p) => p.field);
+      setGone(fields);
+      setDetails((d) => ({
+        ...d,
+        ...(fields.includes("programevent") ? { programevent: "" } : {}),
+        ...(fields.includes("location") ? { location: "" } : {}),
+        ...(fields.includes("subjecttype") ? { subjecttype: now ? d.subjecttype.filter((s) => now.subjecttype.includes(s)) : [] } : {}),
+      }));
+      return;
+    }
+    setStartFailed(true);
   }
 
   const startOver = () => {
@@ -136,8 +171,10 @@ export function SendMedia({ sender }: { sender: Sender }) {
     setChosen([]);
     setRefused([]);
     setStates({});
-    setTitle("");
+    setDetails(NO_DETAILS);
     setRights(false);
+    setGone([]);
+    setStartFailed(false);
     go("choose");
   };
 
@@ -154,7 +191,7 @@ export function SendMedia({ sender }: { sender: Sender }) {
           <p className="text-lg">{copy.choose.intro}</p>
           <FilePickerButton
             variant={chosen.length ? "secondary" : "primary"}
-            size="large"
+           
             className="w-full"
             acceptedFileTypes={ACCEPTED}
             allowsMultiple
@@ -179,7 +216,7 @@ export function SendMedia({ sender }: { sender: Sender }) {
                 <p className="text-base text-muted-foreground">{copy.choose.howTo}</p>
               </div>
               <Gallery items={chosen} onRemove={remove} />
-              <Button variant="primary" size="large" className="w-full" onPress={() => go("describe")}>
+              <Button variant="primary" className="w-full" onPress={() => go("describe")}>
                 {copy.choose.next}
               </Button>
             </>
@@ -188,35 +225,23 @@ export function SendMedia({ sender }: { sender: Sender }) {
       );
     }
 
-    case "describe": {
-      const needed = [
-        ...(title.trim() ? [] : [copy.describe.neededTitle]),
-        ...(rights ? [] : [copy.describe.neededRights]),
-      ];
+    case "describe":
       return (
-        <StepFrame step={1} focusHeading={moved}>
-          {chosen.length > 1 && <p className="text-lg">{copy.describe.appliesToAll(chosen.length)}</p>}
-          <p className="text-sm text-muted-foreground">
-            <span aria-hidden className="text-destructive">
-              *
-            </span>{" "}
-            {copy.describe.requiredLegend}
-          </p>
-          <TextField value={title} onChange={setTitle} isRequired className="flex flex-col gap-1">
-            <Label className="text-base">{copy.describe.title}</Label>
-            <Input className="min-h-12 text-base" maxLength={200} />
-            <Description className="text-sm text-muted-foreground">{copy.describe.titleHint}</Description>
-          </TextField>
-          <Checkbox isSelected={rights} onChange={setRights} isRequired className="min-h-12 gap-3 text-base">
-            {copy.describe.rights}
-          </Checkbox>
-          {needed.length > 0 && <p className="text-base font-medium">{copy.describe.stillNeeded(needed)}</p>}
-          <Button variant="primary" size="large" className="w-full" isDisabled={needed.length > 0} onPress={send}>
-            {copy.describe.send}
-          </Button>
-        </StepFrame>
+        <Describe
+          count={chosen.length}
+          details={details}
+          onChange={describe}
+          rights={rights}
+          onRights={setRights}
+          options={options}
+          onRetryOptions={loadOptions}
+          gone={gone}
+          startFailed={startFailed}
+          busy={starting}
+          onSend={() => void send()}
+          focusHeading={moved}
+        />
       );
-    }
 
     case "sending": {
       const sent = chosen.filter((i) => states[i.key]?.status === "sent").length;
@@ -281,12 +306,12 @@ function ItemRow({
         {/* Still moving while ResourceSpace makes a video's previews, so it never looks stuck (#55). */}
         {state.status === "finishing" && <ProgressBar isIndeterminate aria-label={item.file.name} />}
         {state.status === "failed" && (
-          <Button variant="primary" size="large" className="w-full" onPress={onTryAgain}>
+          <Button variant="primary" className="w-full" onPress={onTryAgain}>
             {copy.sending.tryAgain}
           </Button>
         )}
         {state.status === "refused" && (
-          <Button variant="secondary" size="large" className="w-full" onPress={onRemove}>
+          <Button variant="secondary" className="w-full" onPress={onRemove}>
             {copy.sending.remove}
           </Button>
         )}
@@ -308,7 +333,7 @@ function Done({ photos, videos, onMore }: { photos: number; videos: number; onMo
       </h2>
       <p className="text-lg">{copy.done.next}</p>
       <p className="text-lg">{copy.done.nothingElse}</p>
-      <Button variant="secondary" size="large" className="w-full" onPress={onMore}>
+      <Button variant="secondary" className="w-full" onPress={onMore}>
         {copy.done.more}
       </Button>
     </section>

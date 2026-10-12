@@ -12,6 +12,7 @@ import path from "node:path";
 import * as tus from "tus-js-client";
 import { afterEach, describe, expect, it } from "vitest";
 import { client, jpeg, member, mov, mp4 } from "./testing/client.ts";
+import { createFakeResourceSpace } from "./testing/fake-rs.ts";
 import { COOKIE, signedInAs, startHarness, type Harness, type SeenRequest } from "./testing/harness.ts";
 import { startProxy, type DroppingProxy } from "./testing/proxy.ts";
 
@@ -189,7 +190,7 @@ describe("the Item's status, which the page polls", () => {
 
     expect(await settle(id)).toEqual({ status: "sent" });
     expect(h.fakeRs.resources.size).toBe(1);
-    expect(await readdir(h.stagingDir)).toEqual([`${id}.item.json`]);
+    expect(await staged(h)).toEqual([`${id}.item.json`]);
   });
 
   it("answers at once, as before, when ResourceSpace is quick", async () => {
@@ -261,7 +262,7 @@ describe("the Item's status, which the page polls", () => {
 
     expect((await client(h).finish(id)).status).toBe(415);
 
-    expect(await readdir(h.stagingDir)).toEqual([]);
+    expect(await staged(h)).toEqual([]);
     expect(await statusOf(id)).toEqual({ status: "refused", error: "wrong_type" });
   });
 
@@ -382,7 +383,7 @@ describe("the hand-off of a big video to ResourceSpace", () => {
       expect(up!.contentLength).toBe(up!.headBytes + GiB + up!.tailBytes);
       expect(up!.contentType).toBe("video/mp4");
       // Nothing of it is left on the staging volume, only the small record.
-      expect(await readdir(h.stagingDir)).toEqual([`${id}.item.json`]);
+      expect(await staged(h)).toEqual([`${id}.item.json`]);
     },
     120_000,
   );
@@ -397,7 +398,7 @@ describe("staging", () => {
 
     const submission = await client(h).startSubmission();
     const ids = [await client(h).upload(mp4(2 * MB), { submission, metadata: { filename: "a.mov" } }), await client(h).upload(jpeg(), { submission })];
-    const midway = await readdir(h.stagingDir);
+    const midway = await staged(h);
     for (const id of ids) await client(h).finish(id);
     for (const id of ids) await settle(id);
 
@@ -407,7 +408,7 @@ describe("staging", () => {
     // While arriving: the bytes and tus's record of them, under server-made ids.
     expect(midway.sort()).toEqual(ids.flatMap((id) => [id, `${id}.json`]).sort());
     // Once sent: only each Item's small record.
-    expect((await readdir(h.stagingDir)).sort()).toEqual(ids.map((id) => `${id}.item.json`).sort());
+    expect((await staged(h)).sort()).toEqual(ids.map((id) => `${id}.item.json`).sort());
   });
 });
 
@@ -441,14 +442,23 @@ interface StreamedUpload {
  * size and hash, so a 1 GB test never holds 1 GB in memory. Answers the
  * other calls as the real one does when they succeed.
  */
+/** What staging holds for the uploads: each Submission's record (#56) stays until the sweep (#23), so it is left out. */
+async function staged(h: Harness) {
+  return (await readdir(h.stagingDir)).filter((name) => !name.endsWith(".submission.json"));
+}
+
 async function startStreamingResourceSpace() {
   const uploads: StreamedUpload[] = [];
+  // Everything but the file itself (the Submission's options, the Item, its
+  // fields and the read-back) is answered by the ordinary fake.
+  const fake = createFakeResourceSpace();
   const server = http.createServer((req, res) => {
     const fn = new URL(req.url ?? "/", "http://rs").searchParams.get("function");
     if (fn !== "upload_multipart") {
       req.resume();
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(fn === "create_resource" ? "5000" : "true");
+      const reply = fake.handle({ method: req.method ?? "", url: req.url ?? "", headers: req.headers, body: Buffer.alloc(0) });
+      res.writeHead(reply.status ?? 200, { "content-type": "application/json" });
+      res.end(reply.json !== undefined ? JSON.stringify(reply.json) : (reply.body ?? ""));
       return;
     }
     const boundary = /boundary=([^;]+)/.exec(req.headers["content-type"] ?? "")?.[1] ?? "";
