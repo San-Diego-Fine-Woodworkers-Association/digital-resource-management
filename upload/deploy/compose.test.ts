@@ -67,6 +67,11 @@ describe("the upload container", () => {
     expect(upload.pids_limit).toBeGreaterThan(0);
   });
 
+  // The host has no default log rotation, and the log is on the root disk (#60).
+  it("keeps its log to a bounded size", () => {
+    expect(upload.logging).toEqual({ driver: "json-file", options: { "max-size": "20m", "max-file": "5" } });
+  });
+
   it("holds no database secrets and no ResourceSpace secret but the upload-service key", () => {
     const env = (upload.environment as string[]).join("\n");
     expect(env).not.toMatch(/MYSQL|MARIADB|SCRAMBLE|PASSWORD/);

@@ -346,7 +346,10 @@ export function createService(config: Config, options: ServiceOptions = {}): Ser
     }
     const limited = perUser.take(s.user.id);
     if (limited) {
-      return answer(429, { error: "rate_limited" }, "rate_limited", s.user, { "Retry-After": String(limited.retryAfterS) });
+      // Logged once, not audited per request: a flood must not push the
+      // audit trail out of the (rotated) container log.
+      if (limited.first) log("rate limit reached", { user: s.user.id });
+      return sendJson(res, 429, { error: "rate_limited" }, { "Retry-After": String(limited.retryAfterS), Connection: "close" });
     }
 
     const route = url.pathname.slice(`${BASE}/api`.length);
@@ -584,8 +587,10 @@ export function createService(config: Config, options: ServiceOptions = {}): Ser
 
     // Everything from here asks the auth service or ResourceSpace something,
     // so it counts against the address's allowance (the built files do not).
-    const limited = perAddress.take(addressKey(clientIp(req)));
+    const address = addressKey(clientIp(req));
+    const limited = perAddress.take(address);
     if (limited) {
+      if (limited.first) log("rate limit reached", { address });
       const headers = { "Retry-After": String(limited.retryAfterS), Connection: "close" };
       if (isHealth || isApi) return sendJson(res, 429, { error: "rate_limited" }, headers);
       return sendPage(res, 429, { screen: "unavailable" }, headers);

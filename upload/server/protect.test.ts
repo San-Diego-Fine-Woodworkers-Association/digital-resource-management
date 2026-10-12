@@ -302,6 +302,21 @@ describe("the request rate limit", () => {
     expect((await from("2001:db8:1:3::10")).status).toBe(200);
   });
 
+  it("logs a flood once, and writes no audit line per refused request", async () => {
+    h = await startHarness({ RATE_USER_BURST: "1", RATE_USER_PER_MINUTE: "1" });
+    h.auth.respond = member();
+    const begin = () => client(h).begin();
+    expect((await begin()).status).toBe(201);
+    const audited = h.auditLines.length;
+
+    for (let i = 0; i < 5; i++) expect((await begin()).status).toBe(429);
+
+    expect(h.auditLines.length).toBe(audited);
+    expect(h.logLines.filter((l) => l.message === "rate limit reached")).toEqual([
+      { message: "rate limit reached", fields: { user: "u-42" } },
+    ]);
+  });
+
   it("records the address Traefik saw in the audit log", async () => {
     h = await startHarness();
     h.auth.respond = member();

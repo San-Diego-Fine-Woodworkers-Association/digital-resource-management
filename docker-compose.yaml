@@ -173,6 +173,14 @@ services:
     pids_limit: 128
     tmpfs:
       - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+    # The audit trail and the service's log go to the container log, on the
+    # root disk; the host has no default rotation. Bounded at 100 MB (about
+    # 300 000 audit lines), so no flood can fill the disk (#60).
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
     environment:
       - PUBLIC_BASE_URL=https://${DOMAIN_NAME}
       - AUTH_BASE_URL=${UPLOAD_AUTH_BASE_URL:-https://auth.sdfwa.org}
