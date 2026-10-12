@@ -36,7 +36,7 @@ function refusalReason(refusal: Refusal, kind: MediaKind | undefined, size: numb
     case "too_many":
       return "That's the most we can take at once. Send this one next time.";
     // Not on #31, which has one "too many" line: the videos and total limits
-    // need their own (#54). In the same pattern. Needs a read-through.
+    // need their own (#54). In the same pattern. Approved in the #54 review.
     case "too_many_videos":
       return "That's the most videos we can take at once (10). Send this one next time.";
     case "too_much_in_all":
@@ -74,10 +74,10 @@ export const copy = {
     refused: (name: string, reason: string) => `${name}: ${reason}`,
     reason: refusalReason,
     // Not on #31: from the prototype. Shown when the browser can't draw the
-    // photo (often HEIC) or play the video. Needs a read-through.
+    // photo (often HEIC) or play the video. Approved in the #54 review.
     noPreview: "Photo (preview not available)",
     videoNoPreview: "Video (preview not available)",
-    // Not on #31: the gallery's labels, from the prototype. Needs a read-through.
+    // Not on #31: the gallery's labels, from the prototype. Approved in the #54 review.
     gallery: "Your photos and videos",
     scrollHint: (count: number) => `Scroll to see all ${count}.`,
     video: "Video",
@@ -86,7 +86,7 @@ export const copy = {
     bigger: (name: string) => `${name}, bigger`,
     viewerNoPreview: "This photo can't be shown here, but it will still be sent.",
     close: "Close",
-    // Not on #31 as a string; #56 refers to "Next". Needs a read-through.
+    // Not on #31 as a string; #56 refers to "Next". Approved in the #56 review.
     next: "Next",
   },
 
@@ -132,7 +132,8 @@ export const copy = {
   sending: {
     keepOpen: "Please keep this page open and your phone awake until it says thank you.",
     progress: (sent: number, total: number) => `${sent} of ${total} sent.`,
-    // Not on #31: an Item waiting its turn (two are sent at a time). Needs a read-through.
+    // Not on #31: an Item waiting its turn (two are sent at a time). Approved in
+    // the #54 review.
     waiting: "Waiting…",
     sending: "Sending…",
     finishing: "Finishing up…",
