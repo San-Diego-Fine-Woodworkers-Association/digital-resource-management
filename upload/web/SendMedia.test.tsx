@@ -643,13 +643,10 @@ describe("sending", () => {
       "Can't be added: That's the most videos we can take at once (10). Send this one next time.",
     );
     expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.mov", "c.jpg"]);
+    // It can be taken out while the rest carry on.
+    await user.click(screen.getByRole("button", { name: "Remove" }));
     await act(async () => calls[0]!.finish({ ok: true }));
     await act(async () => calls[2]!.finish({ ok: true }));
-    // Not the thank-you yet: the refused one is still on the list until it is taken out.
-    expect(screen.getByText("2 of 3 sent.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Remove" }));
 
     expect(screen.getByRole("heading", { name: "Thank you! We have your 2 photos." })).toBeInTheDocument();
   });
@@ -1428,6 +1425,11 @@ describe("the end when some were not sent (#58)", () => {
       await press(screen.getByRole("button", { name: "I'll do the rest later" }));
 
       expect(screen.getByRole("heading", { name: "Thank you! We have your 1 photo." })).toHaveFocus();
+      expect(screen.getByText("A volunteer will take a look before they appear on the SDFWA media site.")).toBeInTheDocument();
+      expect(
+        screen.getByText("The ones that didn't go through weren't sent. You can share them again any time."),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/You don't need to do anything else/)).not.toBeInTheDocument();
       const sends = calls.length;
       await act(async () => vi.advanceTimersByTime(60 * 60 * 1000));
       expect(calls).toHaveLength(sends);
@@ -1450,7 +1452,7 @@ describe("the end when some were not sent (#58)", () => {
     expect(screen.getAllByRole("button", { name: "Try again" })).toHaveLength(2);
   });
 
-  it("waits for one that can't be added to be taken out first", async () => {
+  it("lists one that can't be added with its reason, and Try again is only for the others", async () => {
     const user = userEvent.setup();
     const { sender, calls } = fakeSender();
     render(<App boot={boot} sender={sender} />);
@@ -1460,11 +1462,36 @@ describe("the end when some were not sent (#58)", () => {
     await act(async () => calls[0]!.finish({ ok: true }));
     await act(async () => calls[1]!.finish({ ok: false, reason: "too_many_today" }));
     await act(async () => calls[2]!.finish({ ok: false, reason: "failed" }));
-    expect(screen.getByRole("heading", { level: 2, name: "Sending" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Remove" }));
+    expect(screen.getByRole("heading", { name: "Most of your photos are in." })).toHaveFocus();
+    expect(screen.getByText(/^2 of 3 didn't make it\./)).toBeInTheDocument();
+    expect(screen.getByText(/^Can't be added:/)).toHaveTextContent(
+      "Can't be added: That's the most we can take from you in one day. Please send this one tomorrow.",
+    );
+    expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    // Only the one that couldn't be saved is sent again.
+    expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg", "c.jpg", "c.jpg"]);
+    await act(async () => calls[3]!.finish({ ok: true }));
+    expect(screen.getByRole("heading", { name: "Most of your photos are in." })).toBeInTheDocument();
+    expect(screen.getByText(/^1 of 3 didn't make it\./)).toBeInTheDocument();
+  });
+
+  it("offers no Try again when the only ones not sent can't be added", async () => {
+    const user = userEvent.setup();
+    const { sender, calls } = fakeSender();
+    render(<App boot={boot} sender={sender} />);
+    await pick(user, [photo("a.jpg"), video("b.mov")]);
+    await describeAndSend(user);
+
+    await act(async () => calls[0]!.finish({ ok: true }));
+    await act(async () => calls[1]!.finish({ ok: false, reason: "too_many_videos" }));
 
     expect(screen.getByRole("heading", { name: "Most of your photos are in." })).toBeInTheDocument();
-    expect(screen.getByText(/^1 of 2 didn't make it\./)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "I'll do the rest later" }));
+    expect(screen.getByRole("heading", { name: "Thank you! We have your 1 photo." })).toBeInTheDocument();
   });
 });

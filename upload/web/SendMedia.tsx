@@ -181,9 +181,9 @@ export function SendMedia({ sender }: { sender: Sender }) {
       if (inFlight.current.size >= AT_ONCE) break;
       if (canStart(states[item.key] ?? WAITING) && !inFlight.current.has(item.key)) start(item);
     }
-    // Nothing more is happening, and nothing waits to be taken out: the end.
+    // Nothing more is happening: the end. One that can't be added is listed there with its reason.
     const all = chosen.map((i) => states[i.key] ?? WAITING);
-    if (all.length === 0 || !all.every(isSettled) || all.some((s) => s.status === "refused")) return;
+    if (all.length === 0 || !all.every(isSettled)) return;
     const sent = all.filter((s) => s.status === "sent").length;
     if (sent === all.length) go("done");
     // With none sent, "most are in" would not be true: each stays with its Try again.
@@ -421,9 +421,11 @@ export function SendMedia({ sender }: { sender: Sender }) {
         />
       );
 
-    case "done":
+    case "done": {
       // Only what was sent: after "I'll do the rest later", not everything was.
-      return <Done {...counts(chosen.filter((i) => states[i.key]?.status === "sent"))} onMore={startOver} />;
+      const sent = chosen.filter((i) => states[i.key]?.status === "sent");
+      return <Done {...counts(sent)} allSent={sent.length === chosen.length} onMore={startOver} />;
+    }
   }
 }
 
@@ -534,9 +536,12 @@ function SomeNotSent({
           );
         })}
       </ul>
-      <Button variant="primary" className="w-full" onPress={onTryAgain}>
-        {copy.someNotSent.tryAgain}
-      </Button>
+      {/* Not for one that can't be added: trying again won't change that. */}
+      {items.some((i) => canTryAgain(states[i.key] ?? WAITING)) && (
+        <Button variant="primary" className="w-full" onPress={onTryAgain}>
+          {copy.someNotSent.tryAgain}
+        </Button>
+      )}
       <Button variant="secondary" className="w-full" onPress={onLater}>
         {copy.someNotSent.later}
       </Button>
@@ -544,7 +549,18 @@ function SomeNotSent({
   );
 }
 
-function Done({ photos, videos, onMore }: { photos: number; videos: number; onMore: () => void }) {
+function Done({
+  photos,
+  videos,
+  allSent,
+  onMore,
+}: {
+  photos: number;
+  videos: number;
+  /** False after "I'll do the rest later": it says the rest weren't sent. */
+  allSent: boolean;
+  onMore: () => void;
+}) {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => heading.current?.focus(), []);
   return (
@@ -556,7 +572,7 @@ function Done({ photos, videos, onMore }: { photos: number; videos: number; onMo
         {copy.done.title(photos, videos)}
       </h2>
       <p className="text-lg">{copy.done.next}</p>
-      <p className="text-lg">{copy.done.nothingElse}</p>
+      <p className="text-lg">{allSent ? copy.done.nothingElse : copy.done.notAllSent}</p>
       <Button variant="secondary" className="w-full" onPress={onMore}>
         {copy.done.more}
       </Button>

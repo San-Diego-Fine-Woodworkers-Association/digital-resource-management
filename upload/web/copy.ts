@@ -187,6 +187,9 @@ export const copy = {
     title: (photos: number, videos: number) => `Thank you! We have your ${countWords(photos, videos)}.`,
     next: "A volunteer will take a look before they appear on the SDFWA media site.",
     nothingElse: "You don't need to do anything else, and you can close this page.",
+    // Not on #31 (#58): in place of nothingElse after "I'll do the rest
+    // later", when some weren't sent. Approved in the #58 review.
+    notAllSent: "The ones that didn't go through weren't sent. You can share them again any time.",
     more: "Share more photos or videos",
   },
 
