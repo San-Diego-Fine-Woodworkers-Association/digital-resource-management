@@ -659,6 +659,9 @@ describe("sending", () => {
     ["too_big", "Too big (1 KB). Photos can be up to 50 MB."],
     ["too_many", "That's the most we can take at once. Send this one next time."],
     ["too_much_in_all", "That's as much as we can take at once (4 GB in all). Send this one next time."],
+    // The member's daily quotas (#60).
+    ["too_many_today", "That's the most we can take from you in one day. Please send this one tomorrow."],
+    ["too_much_today", "That's as much as we can take from you in one day. Please send this one tomorrow."],
   ] as const)("words the service's %s refusal plainly", async (reason, words) => {
     const user = userEvent.setup();
     const { sender, calls } = fakeSender();
@@ -688,6 +691,27 @@ describe("sending", () => {
     expect(starts).toHaveLength(1);
     await act(async () => calls[1]!.finish({ ok: true }));
     expect(screen.getByRole("heading", { name: "Thank you! We have your 1 photo." })).toBeInTheDocument();
+  });
+
+  it("says plainly when the service is busy, not that it failed, and offers Try again (#60)", async () => {
+    const user = userEvent.setup();
+    const { sender, calls } = fakeSender();
+    render(<App boot={boot} sender={sender} />);
+    await pick(user, [photo("a.jpg"), photo("b.jpg")]);
+    await describeAndSend(user);
+
+    await act(async () => calls[0]!.finish({ ok: false, reason: "busy" }));
+    expect(screen.getByText("We're busy right now. Please try again in a few minutes.")).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't save this one")).not.toBeInTheDocument();
+    // The rest carry on.
+    await act(async () => calls[1]!.finish({ ok: true }));
+    expect(screen.getByText("1 of 2 sent.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(calls).toHaveLength(3);
+    expect(calls[2]!.file).toBe(calls[0]!.file);
+    await act(async () => calls[2]!.finish({ ok: true }));
+    expect(screen.getByRole("heading", { name: "Thank you! We have your 2 photos." })).toBeInTheDocument();
   });
 
   it("starts fresh, in a new Submission with empty answers, after the thank-you", async () => {

@@ -35,6 +35,17 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ VIDEO_MAX_BYTES: String(2 * 1024 * 1024 * 1024) })).toThrow("VIDEO_MAX_BYTES");
   });
 
+  it("has the decided quotas and a modest rate limit (#23, #60)", () => {
+    const GiB = 1024 * 1024 * 1024;
+    const c = loadConfig({});
+    expect(c.quotas).toEqual({ uploadsAtOnce: 2, stagedBytes: 4 * GiB, dailyItems: 100, dailyBytes: 10 * GiB, dailySubmissions: 50 });
+    expect(c.rateLimits).toEqual({ user: { perMinute: 600, burst: 300 }, ip: { perMinute: 1200, burst: 600 } });
+    expect(loadConfig({ QUOTA_DAILY_ITEMS: "20", RATE_IP_BURST: "50" })).toMatchObject({
+      quotas: { dailyItems: 20 },
+      rateLimits: { ip: { burst: 50 } },
+    });
+  });
+
   // A missing secret must not stop the service (or the compose deploy): it
   // starts, and refuses uploads until the key is set.
   it("starts without the ResourceSpace key, marked as not configured", () => {
@@ -73,6 +84,11 @@ describe("loadConfig", () => {
     ["VIDEO_MAX_BYTES", "1.5"],
     ["SUBMISSION_MAX_BYTES", "lots"],
     ["RS_VIDEO_RESOURCE_TYPE", "video"],
+    ["QUOTA_UPLOADS_AT_ONCE", "0"],
+    ["QUOTA_STAGED_BYTES", "4GB"],
+    ["QUOTA_DAILY_ITEMS", "-5"],
+    ["RATE_USER_PER_MINUTE", "fast"],
+    ["RATE_IP_BURST", "0"],
   ])("refuses a bad %s", (key, value) => {
     expect(() => loadConfig({ [key]: value })).toThrow(key);
   });

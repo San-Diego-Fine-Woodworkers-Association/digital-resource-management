@@ -12,7 +12,11 @@
 //     when that Submission has no room for it (submissions.ts);
 //   - of the metadata the browser sends, only the device's file name is kept,
 //     as the Item's Original Filename, and the Submission it names, once
-//     checked. Everything else is dropped.
+//     checked. Everything else is dropped;
+//   - the member's quotas (quotas.ts) are checked when an upload starts and
+//     before each chunk, and so is the room on the staging volume
+//     (staging.ts): at the cap, or without the space free, the answer is
+//     "busy" and nothing is written.
 import type http from "node:http";
 import { Server } from "@tus/server";
 import { FileStore } from "@tus/file-store";
@@ -20,7 +24,9 @@ import type { Upload } from "@tus/utils";
 import type { Refusal } from "../shared/media.ts";
 import type { Config } from "./config.ts";
 import { originalFileName } from "./naming.ts";
+import type { Quotas } from "./quotas.ts";
 import type { SessionUser } from "./session.ts";
+import type { Staging } from "./staging.ts";
 import type { Submissions } from "./submissions.ts";
 
 export const FILES_PATH = "/upload/api/files";
@@ -49,11 +55,15 @@ export interface UploadInfo {
 
 export interface Uploads {
   /** Handles a tus request from a signed-in, entitled member. */
-  handle(req: http.IncomingMessage, res: http.ServerResponse, user: SessionUser): Promise<{ createdId?: string }>;
+  handle(req: http.IncomingMessage, res: http.ServerResponse, user: SessionUser): Promise<{ createdId?: string; refusal?: string }>;
   /** The upload with this id if it exists and belongs to this member. */
   find(id: string, user: SessionUser): Promise<UploadInfo | undefined>;
-  /** Deletes the staged bytes and tus's record of them. */
-  remove(id: string): Promise<void>;
+  /**
+   * Deletes the staged bytes and tus's record of them. `sent` when the Item
+   * reached ResourceSpace: it then counts towards the member's day; otherwise
+   * its place in the day is given back.
+   */
+  remove(id: string, outcome?: { sent: boolean }): Promise<void>;
 }
 
 /** How each refusal is answered, here and on the hand-off (app.ts). */
@@ -63,7 +73,12 @@ export const REFUSAL_STATUS: Record<Refusal, number> = {
   too_much_in_all: 413,
   too_many: 422,
   too_many_videos: 422,
+  too_many_today: 429,
+  too_much_today: 429,
 };
+
+/** When a busy staging volume is worth trying again: files leave it as they are handed over. */
+const BUSY_RETRY_S = 120;
 
 function toInfo(u: Upload): UploadInfo | undefined {
   const owner = u.metadata?.owner;
@@ -93,22 +108,43 @@ function refuse(status: number, error: string) {
   return { status_code: status, body: JSON.stringify({ error }) };
 }
 
-function sendError(res: http.ServerResponse, status: number, error: string) {
+function sendError(res: http.ServerResponse, status: number, error: string, retryAfterS?: number) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Tus-Resumable": "1.0.0",
     "Cache-Control": "no-store",
     Connection: "close",
+    ...(retryAfterS ? { "Retry-After": String(retryAfterS) } : {}),
   });
   res.end(JSON.stringify({ error }));
 }
 
-export function createUploads(config: Config, submissions: Submissions): Uploads {
+export function createUploads(
+  config: Config,
+  submissions: Submissions,
+  deps: { staging: Staging; quotas: Quotas },
+): Uploads {
+  const { staging, quotas } = deps;
   const store = new FileStore({ directory: config.stagingDir });
   const users = new WeakMap<http.IncomingMessage, SessionUser>();
+  const responses = new WeakMap<http.IncomingMessage, http.ServerResponse>();
   const created = new WeakMap<http.IncomingMessage, string>();
+  /** Why a request was refused, for its audit line. */
+  const refusals = new WeakMap<http.IncomingMessage, string>();
   const publicOrigin = new URL(config.publicBaseUrl).origin;
   const { limits } = config;
+
+  /** A refusal from a tus hook. */
+  function no(node: http.IncomingMessage, status: number, error: string) {
+    refusals.set(node, error);
+    return refuse(status, error);
+  }
+
+  /** A refusal before tus sees the request. */
+  function answer(res: http.ServerResponse, status: number, error: string, retryAfterS?: number) {
+    sendError(res, status, error, retryAfterS);
+    return { refusal: error };
+  }
 
   const tus = new Server({
     path: FILES_PATH,
@@ -125,11 +161,18 @@ export function createUploads(config: Config, submissions: Submissions): Uploads
       // Cannot happen (app.ts always sets it); refuse rather than store an orphan.
       if (!node || !user) throw { status_code: 500, body: "internal\n" };
       // The size must be known up front: the Submission's room is reserved from it.
-      if (upload.size === undefined) throw refuse(400, "invalid");
+      if (upload.size === undefined) throw no(node, 400, "invalid");
       const submissionId = upload.metadata?.submission ?? "";
       const room = submissions.reserve(submissionId, user, upload.id, upload.size);
-      if ("unknown" in room) throw refuse(404, "not_found");
-      if ("refusal" in room) throw refuse(REFUSAL_STATUS[room.refusal], room.refusal);
+      if ("unknown" in room) throw no(node, 404, "not_found");
+      if ("refusal" in room) throw no(node, REFUSAL_STATUS[room.refusal], room.refusal);
+      // The member's day and what they have on staging: counted from here on if it fits.
+      const quota = quotas.start(user.id, upload.id, upload.size);
+      if ("refusal" in quota) {
+        submissions.release(submissionId, upload.id);
+        responses.get(node)?.setHeader("Retry-After", String(quota.retryAfterS));
+        throw no(node, 429, quota.refusal);
+      }
       created.set(node, upload.id);
       const name = upload.metadata?.filename ?? upload.metadata?.name;
       return {
@@ -164,8 +207,19 @@ export function createUploads(config: Config, submissions: Submissions): Uploads
       // Bigger than any file we take: say so in the API's own words (tus
       // would refuse it too, in its own).
       if (req.method === "POST" && Number(req.headers["upload-length"]) > limits.videoMaxBytes) {
-        sendError(res, 413, "too_big");
-        return {};
+        return answer(res, 413, "too_big");
+      }
+      if (req.method === "POST") {
+        // Bytes only ever come in a PATCH, where each chunk is checked; tus's
+        // "creation with upload" (a POST carrying this type) would slip the
+        // first one past that. The page never uses it.
+        if ((req.headers["content-type"] ?? "").toLowerCase().includes("offset+octet-stream")) {
+          return answer(res, 400, "invalid");
+        }
+        // A new Item at the staging cap: busy.
+        if (!(await staging.room(0))) {
+          return answer(res, 503, "busy", BUSY_RETRY_S);
+        }
       }
       let mine: UploadInfo | undefined;
       if (rest !== "") {
@@ -178,20 +232,50 @@ export function createUploads(config: Config, submissions: Submissions): Uploads
           return {};
         }
       }
+      let writing: { done: () => void } | undefined;
+      if (req.method === "PATCH" && mine) {
+        // Before a byte of the chunk is written: does it fit on the volume,
+        // and in what the member may have going?
+        const remaining = Math.max(0, (mine.size ?? 0) - mine.offset);
+        const declared = Number(req.headers["content-length"]);
+        const incoming = Number.isFinite(declared) && declared >= 0 ? Math.min(declared, remaining) : remaining;
+        if (!(await staging.room(incoming))) {
+          return answer(res, 503, "busy", BUSY_RETRY_S);
+        }
+        const slot = quotas.write(user.id, mine.id, incoming);
+        if ("refusal" in slot) {
+          return answer(res, 429, slot.refusal, slot.retryAfterS);
+        }
+        writing = slot;
+      }
       users.set(req, user);
-      await tus.handle(req, res);
+      responses.set(req, res);
+      try {
+        await tus.handle(req, res);
+      } finally {
+        writing?.done();
+      }
+      if (req.method === "PATCH" && mine) {
+        const after = await find(mine.id, user);
+        if (after) quotas.progress(after.id, after.offset);
+      }
       // The member took it out before it was handed over: free its room.
-      if (req.method === "DELETE" && mine && res.statusCode === 204) submissions.release(mine.submissionId, mine.id);
-      return { createdId: res.statusCode === 201 ? created.get(req) : undefined };
+      if (req.method === "DELETE" && mine && res.statusCode === 204) {
+        submissions.release(mine.submissionId, mine.id);
+        quotas.removed(mine.id);
+      }
+      return { createdId: res.statusCode === 201 ? created.get(req) : undefined, refusal: refusals.get(req) };
     },
     find,
-    async remove(id) {
+    async remove(id, outcome) {
       if (!isUploadId(id)) return;
+      if (outcome?.sent) quotas.sent(id);
       try {
         await store.remove(id);
       } catch {
         // already gone
       }
+      quotas.removed(id);
     },
   };
 }

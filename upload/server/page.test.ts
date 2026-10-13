@@ -205,6 +205,8 @@ describe("serving the page", () => {
     const csp = res.headers.get("content-security-policy") ?? "";
     expect(csp).toContain("frame-ancestors 'none'");
     expect(csp).toContain("script-src 'self'");
+    expect(res.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+    expect(res.headers.get("cross-origin-opener-policy")).toBe("same-origin");
   });
 
   it("serves the built scripts and styles without a session", async () => {

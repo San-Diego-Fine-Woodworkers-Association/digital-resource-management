@@ -97,6 +97,8 @@ export interface Submissions {
   accept(submissionId: string, owner: string, uploadId: string, kind: "photo" | "video"): Refusal | "not_found" | undefined;
   /** Frees the room an upload took (it was refused or abandoned). */
   release(submissionId: string, uploadId: string): void;
+  /** Whether it may still take uploads: its record must stay on staging (the sweep, staging.ts). */
+  inUse(submissionId: string): boolean;
 }
 
 export function createSubmissions(
@@ -188,6 +190,11 @@ export function createSubmissions(
       if (!s) return;
       s.uploads.delete(uploadId);
       s.videos.delete(uploadId);
+    },
+
+    inUse(submissionId) {
+      forgetOld();
+      return all.has(submissionId);
     },
   };
 }

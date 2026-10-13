@@ -59,7 +59,52 @@ export interface Config {
    * lower them, which the tests use.
    */
   limits: Limits;
+  /** What one member may have going, and send in a day (#23, quotas.ts). */
+  quotas: Quotas;
+  /** How many API requests a member, and an address, may make (#23, ratelimit.ts). */
+  rateLimits: { user: RateLimit; ip: RateLimit };
 }
+
+export interface Quotas {
+  /** Uploads receiving bytes at the same moment. */
+  uploadsAtOnce: number;
+  /** Bytes on the staging volume at once: one Submission's worth. */
+  stagedBytes: number;
+  /** Items sent to ResourceSpace in any 24 hours (uploads under way hold their place). */
+  dailyItems: number;
+  /** Bytes sent to ResourceSpace in any 24 hours (uploads under way hold their place). */
+  dailyBytes: number;
+  /** Submissions started in any 24 hours: each leaves a small record on staging until the sweep. */
+  dailySubmissions: number;
+}
+
+/** A token bucket: up to `burst` requests at once, refilled at `perMinute`. */
+export interface RateLimit {
+  perMinute: number;
+  burst: number;
+}
+
+const GiB = 1024 * 1024 * 1024;
+
+/** The decided quotas (#23). The environment can tune them. */
+export const QUOTAS: Quotas = {
+  uploadsAtOnce: 2,
+  stagedBytes: 4 * GiB,
+  dailyItems: 100,
+  dailyBytes: 10 * GiB,
+  dailySubmissions: 50,
+};
+
+/**
+ * Modest: the page sends two 5 MiB chunks at a time, which even a fast home
+ * connection keeps well under 10 requests a second, and polls once every 3
+ * seconds while it waits. An address may be a club's shared Wi-Fi, so it
+ * gets twice a member's allowance.
+ */
+export const RATE_LIMITS = {
+  user: { perMinute: 600, burst: 300 },
+  ip: { perMinute: 1200, burst: 600 },
+};
 
 type Env = Record<string, string | undefined>;
 
@@ -129,6 +174,23 @@ export function loadConfig(env: Env): Config {
       maxItems: int(env, "SUBMISSION_MAX_ITEMS", LIMITS.maxItems, 1, LIMITS.maxItems),
       maxVideos: int(env, "SUBMISSION_MAX_VIDEOS", LIMITS.maxVideos, 0, LIMITS.maxVideos),
       maxTotalBytes: int(env, "SUBMISSION_MAX_BYTES", LIMITS.maxTotalBytes, 1, LIMITS.maxTotalBytes),
+    },
+    quotas: {
+      uploadsAtOnce: int(env, "QUOTA_UPLOADS_AT_ONCE", QUOTAS.uploadsAtOnce, 1, 10),
+      stagedBytes: int(env, "QUOTA_STAGED_BYTES", QUOTAS.stagedBytes, 1, 50 * GiB),
+      dailyItems: int(env, "QUOTA_DAILY_ITEMS", QUOTAS.dailyItems, 1, 10_000),
+      dailyBytes: int(env, "QUOTA_DAILY_BYTES", QUOTAS.dailyBytes, 1, 1024 * GiB),
+      dailySubmissions: int(env, "QUOTA_DAILY_SUBMISSIONS", QUOTAS.dailySubmissions, 1, 10_000),
+    },
+    rateLimits: {
+      user: {
+        perMinute: int(env, "RATE_USER_PER_MINUTE", RATE_LIMITS.user.perMinute, 1, 100_000),
+        burst: int(env, "RATE_USER_BURST", RATE_LIMITS.user.burst, 1, 100_000),
+      },
+      ip: {
+        perMinute: int(env, "RATE_IP_PER_MINUTE", RATE_LIMITS.ip.perMinute, 1, 100_000),
+        burst: int(env, "RATE_IP_BURST", RATE_LIMITS.ip.burst, 1, 100_000),
+      },
     },
   };
 }

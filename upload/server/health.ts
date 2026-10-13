@@ -1,11 +1,17 @@
 // Health: staging usage and whether ResourceSpace answers. This is what a
 // future uptime monitor watches (issue #23), so it is 503 whenever the
 // service could not take an upload.
+//
+// Whether ResourceSpace answers also decides whether new Items are taken at
+// all (#23, #60): while it does not, nothing new is staged that could not be
+// handed over. That check is remembered briefly, so a page full of uploads
+// does not ask ResourceSpace about every one.
 import http from "node:http";
 import https from "node:https";
 import { constants } from "node:fs";
-import { access, statfs } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import type { Config } from "./config.ts";
+import { statVolume, type VolumeStatsOf } from "./staging.ts";
 
 export interface StagingHealth {
   ok: boolean;
@@ -24,11 +30,10 @@ export interface Health {
   staging: StagingHealth;
 }
 
-export async function stagingHealth(dir: string, capPercent: number): Promise<StagingHealth> {
+export async function stagingHealth(dir: string, capPercent: number, stats: VolumeStatsOf = statVolume): Promise<StagingHealth> {
   try {
-    const fs = await statfs(dir);
-    const totalBytes = fs.blocks * fs.bsize;
-    const usedBytes = (fs.blocks - fs.bfree) * fs.bsize;
+    const { totalBytes, freeBytes } = await stats(dir);
+    const usedBytes = totalBytes - freeBytes;
     const usedPercent = totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 1000) / 10 : 100;
     let writable = true;
     try {
@@ -66,10 +71,47 @@ export function resourceSpaceReachable(config: Config): Promise<boolean> {
   });
 }
 
-export async function checkHealth(config: Config, configured: boolean): Promise<Health> {
+/** Remembered this long after ResourceSpace answered... */
+const REACHABLE_FOR_MS = 15_000;
+/** ...and this long after it did not, so it is soon asked again. */
+const UNREACHABLE_FOR_MS = 5_000;
+
+export interface Reachability {
+  /**
+   * Whether ResourceSpace answered recently, asking it again when that is
+   * not known. Everyone asking at once shares one request; the health
+   * endpoint too, since anyone may call it and it must not become a way to
+   * keep ResourceSpace busy.
+   */
+  reachable(): Promise<boolean>;
+}
+
+export function createReachability(config: Config, now: () => number = Date.now): Reachability {
+  let known: { reachable: boolean; at: number } | undefined;
+  let asking: Promise<boolean> | undefined;
+  return {
+    reachable() {
+      if (known && now() - known.at < (known.reachable ? REACHABLE_FOR_MS : UNREACHABLE_FOR_MS)) {
+        return Promise.resolve(known.reachable);
+      }
+      asking ??= resourceSpaceReachable(config).then((reachable) => {
+        known = { reachable, at: now() };
+        asking = undefined;
+        return reachable;
+      });
+      return asking;
+    },
+  };
+}
+
+export async function checkHealth(
+  config: Config,
+  configured: boolean,
+  deps: { reachability?: Reachability; stats?: VolumeStatsOf } = {},
+): Promise<Health> {
   const [reachable, staging] = await Promise.all([
-    resourceSpaceReachable(config),
-    stagingHealth(config.stagingDir, config.stagingCapPercent),
+    deps.reachability ? deps.reachability.reachable() : resourceSpaceReachable(config),
+    stagingHealth(config.stagingDir, config.stagingCapPercent, deps.stats),
   ]);
   return {
     status: reachable && configured && staging.ok ? "ok" : "degraded",

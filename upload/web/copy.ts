@@ -41,6 +41,13 @@ function refusalReason(refusal: Refusal, kind: MediaKind | undefined, size: numb
       return "That's the most videos we can take at once (10). Send this one next time.";
     case "too_much_in_all":
       return "That's as much as we can take at once (4 GB in all). Send this one next time.";
+    // Not on #31 (#60): a member's daily quotas, 100 photos and videos or
+    // 10 GB sent in 24 hours. In the same pattern, without the numbers (they
+    // can be tuned). Approved in the #60 review.
+    case "too_many_today":
+      return "That's the most we can take from you in one day. Please send this one tomorrow.";
+    case "too_much_today":
+      return "That's as much as we can take from you in one day. Please send this one tomorrow.";
   }
 }
 
@@ -136,16 +143,16 @@ export const copy = {
     changed: "Changed",
     send: "Send them",
     // Not on #31 (#57): back from Step 3 to Step 2, keeping every answer and
-    // every change. Needs a read-through.
+    // every change. Approved in the #57 review.
     back: "Back",
     // Not on #31 (#57): the tile's and the dialog's names, from the
     // prototype's "Change details for ...". The tile's says when it is
-    // changed, as its badge does. Needs a read-through.
+    // changed, as its badge does. Approved in the #57 review.
     open: (name: string, changed: boolean) => `Change details for ${name}${changed ? " (Changed)" : ""}`,
     dialogTitle: (name: string) => `Change details for ${name}`,
     // Not on #31 (#57): a choice made for one photo or video was taken off
     // the club's list after the page loaded. In the pattern of #56's
-    // choiceGone. Needs a read-through.
+    // choiceGone. Approved in the #57 review.
     choiceGone: (names: string[]) =>
       `A choice you made for ${names.join(", ")} is no longer on the list. Tap it to choose again, or press Send to use what you entered in the last step.`,
   },
@@ -165,6 +172,11 @@ export const copy = {
     tryAgain: "Try again",
     cannotAdd: (reason: string) => `Can't be added: ${reason}`,
     remove: "Remove",
+    // Not on #31 as an Item line (#60): the service is full or not answering,
+    // or the member has as much going as they may. #31's "We're busy right
+    // now. We'll keep trying for a few minutes." needs the automatic retries
+    // (#59); until then the member tries again. Approved in the #60 review.
+    busy: "We're busy right now. Please try again in a few minutes.",
   },
 
   done: {

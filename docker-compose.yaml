@@ -173,6 +173,14 @@ services:
     pids_limit: 128
     tmpfs:
       - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+    # The audit trail and the service's log go to the container log, on the
+    # root disk; the host has no default rotation. Bounded at 100 MB (about
+    # 300 000 audit lines), so no flood can fill the disk (#60).
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
     environment:
       - PUBLIC_BASE_URL=https://${DOMAIN_NAME}
       - AUTH_BASE_URL=${UPLOAD_AUTH_BASE_URL:-https://auth.sdfwa.org}
@@ -189,6 +197,23 @@ services:
       # The kill switch: anything but false/0/no/off pauses uploads.
       - UPLOADS_PAUSED=${UPLOADS_PAUSED:-false}
       - STAGING_DIR=/staging
+      # Protection tuning (#60), settable from Dokploy's Environment tab. The
+      # defaults are the decided values in upload/server/config.ts; an empty
+      # value falls back to them too. Per member: uploads arriving at once,
+      # bytes on staging at once, and Items, bytes and Submissions sent or
+      # started in any 24 hours (4 GiB and 10 GiB, in bytes). Then the
+      # staging cap, as a percentage of the volume, and the request rate per
+      # member and per address (a token bucket: per minute, and burst).
+      - QUOTA_UPLOADS_AT_ONCE=${QUOTA_UPLOADS_AT_ONCE:-2}
+      - QUOTA_STAGED_BYTES=${QUOTA_STAGED_BYTES:-4294967296}
+      - QUOTA_DAILY_ITEMS=${QUOTA_DAILY_ITEMS:-100}
+      - QUOTA_DAILY_BYTES=${QUOTA_DAILY_BYTES:-10737418240}
+      - QUOTA_DAILY_SUBMISSIONS=${QUOTA_DAILY_SUBMISSIONS:-50}
+      - STAGING_CAP_PERCENT=${STAGING_CAP_PERCENT:-80}
+      - RATE_USER_PER_MINUTE=${RATE_USER_PER_MINUTE:-600}
+      - RATE_USER_BURST=${RATE_USER_BURST:-300}
+      - RATE_IP_PER_MINUTE=${RATE_IP_PER_MINUTE:-1200}
+      - RATE_IP_BURST=${RATE_IP_BURST:-600}
     volumes:
       # The dedicated staging volume (ADR 0004, issue #35), owned by
       # 10001:10001 on the host. Required: there is deliberately no default,

@@ -235,7 +235,7 @@ export function createItems(
       return { outcome: "not_saved", record, error: err instanceof Error ? err.message : String(err) };
     }
 
-    await uploads.remove(upload.id);
+    await uploads.remove(upload.id, { sent: true });
     return { outcome: "sent", record };
   }
 
