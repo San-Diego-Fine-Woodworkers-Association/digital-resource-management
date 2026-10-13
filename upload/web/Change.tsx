@@ -137,7 +137,7 @@ export function Change({
           <Dialog
             aria-labelledby="change-one-title"
             aria-describedby="change-one-note"
-            className="flex max-h-[85vh] flex-col gap-4 overflow-y-auto outline-none"
+            className="scrollbar-visible flex max-h-[85vh] flex-col gap-4 overflow-y-auto outline-none"
           >
             {open && (
               <>

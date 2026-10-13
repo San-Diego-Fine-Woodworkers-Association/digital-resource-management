@@ -133,7 +133,7 @@ export function Gallery({
         <ul
           ref={list}
           aria-label={copy.choose.gallery}
-          className="grid max-h-[calc((100cqw-1rem)/3*4+1.5rem)] grid-cols-3 gap-2 overflow-y-auto"
+          className="scrollbar-visible grid max-h-[calc((100cqw-1rem)/3*4+1.5rem)] grid-cols-3 gap-2 overflow-y-auto"
         >
           {items.map((item, index) => (
             <li key={item.key} data-key={item.key} className="relative aspect-square">
@@ -183,7 +183,7 @@ export function Gallery({
         <Modal size="wide" className="p-3">
           <Dialog
             aria-label={viewing ? copy.choose.bigger(viewing.file.name) : undefined}
-            className="flex max-h-[90vh] flex-col gap-3 overflow-y-auto outline-none"
+            className="scrollbar-visible flex max-h-[90vh] flex-col gap-3 overflow-y-auto outline-none"
           >
             {viewing && (
               <>
