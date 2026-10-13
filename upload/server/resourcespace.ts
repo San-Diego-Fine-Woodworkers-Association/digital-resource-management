@@ -34,6 +34,14 @@ export class ResourceSpaceError extends Error {
     this.fn = fn;
     this.status = status;
   }
+
+  /**
+   * ResourceSpace never answered (the request timed out or the connection
+   * broke), so whether it did what was asked is unknown (#58).
+   */
+  get unanswered(): boolean {
+    return this.status === undefined;
+  }
 }
 
 export interface ResourceSpace {

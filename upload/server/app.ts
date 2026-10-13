@@ -45,6 +45,8 @@ export interface ServiceOptions {
   log?: (message: string, fields?: Record<string, unknown>) => void;
   /** The pause before the first read-back retry (items.ts); tests shorten it. */
   readBackRetryDelayMs?: number;
+  /** The pauses before the hand-off tries ResourceSpace again after a failure (items.ts, #58); tests shorten them. */
+  rsRetryDelaysMs?: number[];
   /** The clock every quota, rate limit and the sweep go by; tests move it on instead of waiting. */
   now?: () => number;
   /** How full the staging volume is; tests fake it. */
@@ -216,6 +218,7 @@ export function createService(config: Config, options: ServiceOptions = {}): Ser
     options: liveOptions,
     log,
     retryDelayMs: options.readBackRetryDelayMs,
+    rsRetryDelaysMs: options.rsRetryDelaysMs,
     now: () => new Date(now()),
   });
 

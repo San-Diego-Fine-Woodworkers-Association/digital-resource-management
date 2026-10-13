@@ -9,6 +9,21 @@
 // ResourceSpace has confirmed everything, the staged file is deleted and only
 // that small record remains, so a repeated request still answers "sent".
 //
+// One window is left (#58): if ResourceSpace makes the Item but its answer
+// never arrives (the call times out, or the service stops before it writes
+// the ref down), the ref is unknown. So the record notes when a create was
+// asked for before asking, and a later try that finds that note without a ref
+// logs that ResourceSpace may hold an empty Item from it. That Item has no
+// file and no answers (both only ever go to the recorded ref), so it is
+// never a second copy of the photo, only an empty one for a Reviewer to
+// clear.
+//
+// When ResourceSpace answers with a failure, the hand-off tries again by
+// itself a couple of times before it reports "not_saved" (#30: Couldn't save
+// is what is left after the service's own retries). A call ResourceSpace
+// never answered is not tried again here: it already waited the whole
+// timeout, and a file upload that timed out took many minutes.
+//
 // The answers and the rights confirmation come from the Submission's record,
 // checked when the Submission was started (#56); the Submitter fields only
 // from the verified session and the server itself. From the browser come
@@ -43,10 +58,10 @@ import type { Config } from "./config.ts";
 import { detectFile } from "./filetype.ts";
 import { fileName, originalFileName } from "./naming.ts";
 import type { LiveOptions } from "./options.ts";
-import type { ResourceSpace } from "./resourcespace.ts";
+import { ResourceSpaceError, type ResourceSpace } from "./resourcespace.ts";
 import type { SessionUser } from "./session.ts";
 import type { SubmissionRecord, Submissions } from "./submissions.ts";
-import { isUploadId, type Uploads } from "./uploads.ts";
+import { isUploadId, type UploadInfo, type Uploads } from "./uploads.ts";
 
 export interface HandOffRequest {
   uploadId: string;
@@ -57,6 +72,8 @@ export interface HandOffRequest {
 /** How many times the read-back writes a field again before giving up on it. */
 export const READ_BACK_RETRIES = 3;
 
+/** The pauses before the hand-off tries ResourceSpace again after it answered with a failure (#30, #58). */
+export const RS_RETRY_DELAYS_MS = [1000, 3000];
 
 export interface Submitter {
   user: SessionUser;
@@ -82,6 +99,8 @@ export interface ItemRecord {
   /** Set when the Item has its own answers in the Submission's record (#57). */
   item?: string;
   fileName: string;
+  /** When a create was last asked for whose answer has not arrived (#58). */
+  creatingSince?: string;
   ref?: number;
   fileUploaded?: boolean;
   sent?: boolean;
@@ -122,12 +141,15 @@ export function createItems(
     log: (message: string, fields?: Record<string, unknown>) => void;
     /** The pause before the first read-back retry; it grows with each one. */
     retryDelayMs?: number;
+    /** The pauses before trying ResourceSpace again after a failure it answered with. */
+    rsRetryDelaysMs?: number[];
     now?: () => Date;
   },
 ): Items {
   const { uploads, submissions, rs, options, log } = deps;
   const now = deps.now ?? (() => new Date());
   const retryDelayMs = deps.retryDelayMs ?? 500;
+  const rsRetryDelaysMs = deps.rsRetryDelaysMs ?? RS_RETRY_DELAYS_MS;
   // By member and upload id: only the owner's hand-off ever does anything,
   // so nobody else's request can make it look busy or failed.
   const inFlight = new Map<string, Promise<HandOffResult>>();
@@ -202,41 +224,82 @@ export function createItems(
       };
     }
 
-    try {
-      if (record.ref === undefined) {
-        record.ref = await rs.createPendingItem(
-          record.kind === "video" ? config.rsVideoResourceType : config.rsPhotoResourceType,
-        );
-        await saveRecord(upload.id, record);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await toResourceSpace(upload, record, details, submission, submitter);
+        break;
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        const pause = rsRetryDelaysMs[attempt];
+        if (pause === undefined || (err instanceof ResourceSpaceError && err.unanswered)) {
+          return { outcome: "not_saved", record, error };
+        }
+        log("ResourceSpace failed during a hand-off; trying again", { uploadId: upload.id, ref: record.ref, attempt: attempt + 1, error });
+        await sleep(pause);
       }
-      if (!record.fileUploaded) {
-        await rs.uploadFile(record.ref, upload.path, record.fileName, record.detectedType);
-        record.fileUploaded = true;
-        await saveRecord(upload.id, record);
-      }
-      // Written after the file, so nothing ResourceSpace reads from the photo's
-      // own metadata can overwrite them. Empty answers are not written at all:
-      // a blank Date would wipe the date ResourceSpace read from the photo.
-      const fields: [string, string][] = [
-        ...answerFields(details),
-        ["submittername", submitter.name],
-        ["submitteremail", user.email],
-        ["submittermemberid", memberIdFor(user)],
-        ["submissionid", record.submissionId],
-        ["submitterrights", record.rights],
-        ["submitterfilename", originalFileName(upload.originalName)],
-      ];
-      for (const [field, value] of fields) await rs.updateField(record.ref, field, value);
-      const unconfirmed = await readBack(record.ref, fields, submission);
-      if (unconfirmed.length > 0) record.unconfirmed = unconfirmed;
-      record.sent = true;
-      await saveRecord(upload.id, record);
-    } catch (err) {
-      return { outcome: "not_saved", record, error: err instanceof Error ? err.message : String(err) };
     }
 
     await uploads.remove(upload.id, { sent: true });
     return { outcome: "sent", record };
+  }
+
+  /** Every step to ResourceSpace not yet done for this Item, each recorded as it succeeds. */
+  async function toResourceSpace(
+    upload: UploadInfo & { path: string },
+    record: ItemRecord,
+    details: Details,
+    submission: SubmissionRecord,
+    submitter: Submitter,
+  ) {
+    const { user } = submitter;
+    if (record.ref === undefined) {
+      if (record.creatingSince) {
+        log("an earlier try at making this Item got no answer from ResourceSpace: it may hold an empty Item from it", {
+          uploadId: upload.id,
+          submissionId: record.submissionId,
+          askedAt: record.creatingSince,
+        });
+      }
+      // Noted before asking, so an answer that never arrives is not forgotten.
+      record.creatingSince = now().toISOString();
+      await saveRecord(upload.id, record);
+      try {
+        record.ref = await rs.createPendingItem(
+          record.kind === "video" ? config.rsVideoResourceType : config.rsPhotoResourceType,
+        );
+      } catch (err) {
+        // ResourceSpace answered, so it made nothing.
+        if (err instanceof ResourceSpaceError && !err.unanswered) {
+          delete record.creatingSince;
+          await saveRecord(upload.id, record);
+        }
+        throw err;
+      }
+      delete record.creatingSince;
+      await saveRecord(upload.id, record);
+    }
+    if (!record.fileUploaded) {
+      await rs.uploadFile(record.ref, upload.path, record.fileName, record.detectedType);
+      record.fileUploaded = true;
+      await saveRecord(upload.id, record);
+    }
+    // Written after the file, so nothing ResourceSpace reads from the photo's
+    // own metadata can overwrite them. Empty answers are not written at all:
+    // a blank Date would wipe the date ResourceSpace read from the photo.
+    const fields: [string, string][] = [
+      ...answerFields(details),
+      ["submittername", submitter.name],
+      ["submitteremail", user.email],
+      ["submittermemberid", memberIdFor(user)],
+      ["submissionid", record.submissionId],
+      ["submitterrights", record.rights],
+      ["submitterfilename", originalFileName(upload.originalName)],
+    ];
+    for (const [field, value] of fields) await rs.updateField(record.ref, field, value);
+    const unconfirmed = await readBack(record.ref, fields, submission);
+    if (unconfirmed.length > 0) record.unconfirmed = unconfirmed;
+    record.sent = true;
+    await saveRecord(upload.id, record);
   }
 
   /**

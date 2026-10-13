@@ -1,8 +1,10 @@
 // The hand-off as the page drives it (#55): the service may answer
 // "finishing" at once for a big video, and the page then polls the Item's
-// status until ResourceSpace has it. The service's answers are faked.
+// status until ResourceSpace has it. When the connection drops it says so
+// and stops, and the page tries again on its schedule (#58). The service's
+// answers are faked.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { handOver } from "./send.ts";
+import { failureOf, handOver } from "./send.ts";
 
 const ID = "0123456789abcdef0123456789abcdef";
 
@@ -52,19 +54,37 @@ describe("handing an arrived file over", () => {
     expect(fetch.mock.calls.slice(1).map(([url]) => url)).toEqual(Array(3).fill(`/upload/api/items/${ID}`));
   });
 
-  it("rides out a few unanswered polls (a blip in the connection)", async () => {
-    service(
-      json(202, { status: "finishing" }),
-      new TypeError("network"),
-      json(503, { error: "auth_unavailable" }),
-      json(200, { status: "sent" }),
-    );
-    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: true });
+  it("says the connection dropped when a poll goes unanswered, so the page can try again (#58)", async () => {
+    service(json(202, { status: "finishing" }), json(200, { status: "finishing" }), new TypeError("network"));
+    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: false, reason: "connection" });
   });
 
-  it("asks how it went when the connection drops while waiting for the answer", async () => {
-    service(new TypeError("network"), json(200, { status: "finishing" }), json(200, { status: "sent" }));
-    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: true });
+  it("says the connection dropped when it drops while waiting for the answer (#58)", async () => {
+    const fetch = service(new TypeError("network"));
+    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: false, reason: "connection" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("says the connection dropped when something in front of the service answers instead (#58)", async () => {
+    service(json(202, { status: "finishing" }), new Response("Bad Gateway", { status: 502 }));
+    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: false, reason: "connection" });
+  });
+
+  it("asks again when the service restarted before it began the hand-off (#58)", async () => {
+    service(json(202, { status: "finishing" }), json(200, { status: "arrived" }));
+    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: false, reason: "connection" });
+  });
+
+  it("tells the page once the service says it is on it, and not before", async () => {
+    const answered = vi.fn();
+    service(json(202, { status: "finishing" }), json(200, { status: "sent" }));
+    expect(await handOver({ uploadId: ID }, 1, answered)).toEqual({ ok: true });
+    expect(answered).toHaveBeenCalledTimes(1);
+
+    const notAnswered = vi.fn();
+    service(new TypeError("network"));
+    await handOver({ uploadId: ID }, 1, notAnswered);
+    expect(notAnswered).not.toHaveBeenCalled();
   });
 
   it("gives the reason when the service refused the file while finishing", async () => {
@@ -74,17 +94,10 @@ describe("handing an arrived file over", () => {
 
   it.each([
     ["ResourceSpace did not take it", json(200, { status: "not_saved" })],
-    ["the service has forgotten the hand-off", json(200, { status: "arrived" })],
     ["the upload is gone", json(404, { error: "not_found" })],
   ])("can be tried again when %s", async (_, poll) => {
     service(json(202, { status: "finishing" }), poll);
     expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: false, reason: "failed" });
-  });
-
-  it("stops asking after about a minute without an answer", async () => {
-    const fetch = service(json(202, { status: "finishing" }), ...Array.from({ length: 30 }, () => new TypeError("network")));
-    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: false, reason: "failed" });
-    expect(fetch).toHaveBeenCalledTimes(1 + 20);
   });
 
   it("passes a refusal from the hand-off straight on", async () => {
@@ -101,5 +114,22 @@ describe("handing an arrived file over", () => {
   ])("says the service is busy when it answers %s (#60)", async (error, status) => {
     service(json(status, { error }));
     expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: false, reason: "busy" });
+  });
+});
+
+describe("why a request stopped (#58)", () => {
+  it.each([
+    [0, "", "connection"],
+    [502, "Bad Gateway", "connection"],
+    [503, "", "connection"],
+    [504, "Gateway Timeout", "connection"],
+    [503, JSON.stringify({ error: "unavailable" }), "busy"],
+    [429, JSON.stringify({ error: "rate_limited" }), "busy"],
+    [413, JSON.stringify({ error: "too_big" }), "too_big"],
+    [502, JSON.stringify({ error: "not_saved" }), "failed"],
+    [401, JSON.stringify({ error: "signed_out" }), "failed"],
+    [500, "", "failed"],
+  ] as const)("%s %s is %s", (status, body, reason) => {
+    expect(failureOf(status, body)).toBe(reason);
   });
 });

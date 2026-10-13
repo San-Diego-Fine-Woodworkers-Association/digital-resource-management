@@ -4,6 +4,12 @@
 // the service with the Step 2 answers and each changed Item's own (which it
 // checks), each file goes up in chunks into it, then one JSON call hands the
 // arrived file to ResourceSpace, naming its Item (#57).
+//
+// It does not try again by itself (#58): it says why a send stopped, and the
+// page (itemState.ts) decides when to try again. "connection" is the
+// connection, or the service behind it, not answering; trying the same send
+// again resumes the file from what the service already has, or repeats only
+// the hand-off, which never makes a second Item.
 import Uppy from "@uppy/core";
 import Tus from "@uppy/tus";
 import type { Changes, Details, FieldProblem, ItemProblem, Options } from "../shared/details.ts";
@@ -33,7 +39,11 @@ export type OptionsResult = { ok: true; options: Options } | { ok: false };
 export interface SendEvents {
   /** Percent of the file that has reached the service, 0 to 100. */
   onProgress: (percent: number) => void;
-  /** The whole file has arrived; the service is handing it to ResourceSpace. */
+  /**
+   * The whole file has arrived; the service is handing it to ResourceSpace.
+   * On a send tried again after the file arrived, only once the service has
+   * answered, so it always means the service is reachable.
+   */
   onFinishing: () => void;
 }
 
@@ -42,10 +52,11 @@ export type SendResult =
   /**
    * A Refusal: the service will not take this file (it looked inside, or the
    * Submission has no room); sending it again will not help. busy: the
-   * service cannot take it just now (#60); trying again later will. failed:
-   * anything else; trying again may work.
+   * service cannot take it just now (#60); trying again later will.
+   * connection: no answer, or none from the service itself (#58); trying
+   * again soon should work. failed: anything else; trying again may work.
    */
-  | { ok: false; reason: Refusal | "busy" | "failed" };
+  | { ok: false; reason: Refusal | "busy" | "connection" | "failed" };
 
 export interface Submission {
   /**
@@ -74,18 +85,36 @@ const CHUNK_SIZE = 5 * 1024 * 1024;
 
 /** How often the page asks how a hand-off is going while it shows Finishing up (#55). */
 const POLL_EVERY_MS = 3000;
-/** Asks in a row that may go unanswered (a blip in the connection) before it counts as failed: about a minute. */
-const POLL_MISSES = 20;
 
-/** The service's reason for refusing a file, or that it is busy, from a JSON `{error}` body, if it gave one. */
-function refusalIn(body: unknown): Refusal | "busy" | undefined {
+/** The `error` of a JSON `{error}` body: an answer from the service itself. */
+function errorIn(body: unknown): unknown {
   if (typeof body !== "string") return undefined;
   try {
-    const error = (JSON.parse(body) as { error?: unknown }).error;
-    return isRefusal(error) ? error : isBusy(error) ? "busy" : undefined;
+    return (JSON.parse(body) as { error?: unknown }).error;
   } catch {
     return undefined;
   }
+}
+
+/** The service's reason for refusing a file, or that it is busy, from a JSON `{error}` body, if it gave one. */
+function refusalIn(body: unknown): Refusal | "busy" | undefined {
+  const error = errorIn(body);
+  return isRefusal(error) ? error : isBusy(error) ? "busy" : undefined;
+}
+
+/**
+ * Why a request the service did not succeed with stopped: its own reason if
+ * it gave one (a 502 "not_saved" is ResourceSpace failing, not the
+ * connection); the connection when nothing answered (status 0) or something
+ * in front of the service did (a bare 502, 503 or 504 from the proxy while it
+ * restarts); otherwise failed.
+ */
+export function failureOf(status: number, body: unknown): Exclude<SendResult, { ok: true }>["reason"] {
+  const reason = refusalIn(body);
+  if (reason) return reason;
+  if (typeof errorIn(body) === "string") return "failed";
+  if (status === 0 || status === 502 || status === 503 || status === 504) return "connection";
+  return "failed";
 }
 
 export function createSender(): Sender {
@@ -130,8 +159,10 @@ function createSubmission(submissionId: string): Submission {
   const uppy = new Uppy({ autoProceed: false }).use(Tus, {
     endpoint: FILES_ENDPOINT,
     chunkSize: CHUNK_SIZE,
-    // The full retry schedule and its states are #58; this rides out a blip.
-    retryDelays: [0, 1000, 3000, 5000],
+    // None here: the page tries again on its own schedule and shows it as
+    // Connection trouble (#58). Uppy's own retries would hide the trouble, and
+    // while the browser says it is offline they wait for it with no limit.
+    retryDelays: [],
     // The page sends two at a time; this is only a backstop.
     limit: 2,
     // Only the file's name and the Submission go to the service (as metadata it treats as untrusted).
@@ -141,13 +172,14 @@ function createSubmission(submissionId: string): Submission {
     removeFingerprintOnSuccess: true,
   });
 
-  // Why the service refused an upload when it started, by Uppy file id.
-  const refused = new Map<string, Refusal | "busy">();
+  // Why the last try of each upload stopped, by Uppy file id.
+  const stopped = new Map<string, Exclude<SendResult, { ok: true }>["reason"]>();
   uppy.on("upload-error", (file, error, response) => {
-    const original = (error as { originalResponse?: { getBody?: () => unknown } } | undefined)?.originalResponse;
+    const original = (error as { originalResponse?: { getBody?: () => unknown; getStatus?: () => number } } | undefined)
+      ?.originalResponse;
     const body = original?.getBody?.() ?? (response?.body as { xhr?: XMLHttpRequest } | undefined)?.xhr?.responseText;
-    const refusal = refusalIn(body);
-    if (file && refusal) refused.set(file.id, refusal);
+    const status = original?.getStatus?.() ?? response?.status ?? 0;
+    if (file) stopped.set(file.id, failureOf(status, body));
   });
 
   // Each file being sent: Uppy's id for it, and the service's upload id once
@@ -155,10 +187,13 @@ function createSubmission(submissionId: string): Submission {
   const sending = new Map<File, { fileId: string; uploadId?: string }>();
   let added = 0;
 
-  /** The upload id once the whole file has arrived, the reason the service refused it, or nothing (it may work next time). */
-  async function upload(file: File, onProgress: (p: number) => void): Promise<{ uploadId: string } | { refusal: Refusal | "busy" } | undefined> {
+  /** The upload id once the whole file has arrived (and whether it just did), or why it stopped. */
+  async function upload(
+    file: File,
+    onProgress: (p: number) => void,
+  ): Promise<{ uploadId: string; resumed: boolean } | { stopped: Exclude<SendResult, { ok: true }>["reason"] }> {
     const known = sending.get(file);
-    if (known?.uploadId) return { uploadId: known.uploadId };
+    if (known?.uploadId) return { uploadId: known.uploadId, resumed: true };
     let entry = known;
     const progress = (f: { id: string } | undefined, p: { bytesUploaded: number; bytesTotal: number | null }) => {
       if (f && f.id === entry?.fileId && p.bytesTotal) onProgress(Math.floor((p.bytesUploaded / p.bytesTotal) * 100));
@@ -168,7 +203,7 @@ function createSubmission(submissionId: string): Submission {
       let result;
       if (entry) {
         // Resumes from the last chunk the service confirmed.
-        refused.delete(entry.fileId);
+        stopped.delete(entry.fileId);
         result = await uppy.retryUpload(entry.fileId);
       } else {
         const id = submissionId;
@@ -189,13 +224,11 @@ function createSubmission(submissionId: string): Submission {
       const fileId = entry.fileId;
       const done = result?.successful?.find((f) => f.id === fileId);
       const url = done?.uploadURL ?? done?.response?.uploadURL;
-      const refusal = refused.get(fileId);
-      if (!url) return refusal ? { refusal } : undefined;
+      if (!url) return { stopped: stopped.get(fileId) ?? "failed" };
       entry.uploadId = url.split("/").filter(Boolean).pop();
-      return entry.uploadId ? { uploadId: entry.uploadId } : undefined;
+      return entry.uploadId ? { uploadId: entry.uploadId, resumed: false } : { stopped: "failed" };
     } catch {
-      const refusal = entry && refused.get(entry.fileId);
-      return refusal ? { refusal } : undefined;
+      return { stopped: (entry && stopped.get(entry.fileId)) ?? "failed" };
     } finally {
       uppy.off("upload-progress", progress);
     }
@@ -204,8 +237,11 @@ function createSubmission(submissionId: string): Submission {
   return {
     async send(file, events, item) {
       const uploaded = await upload(file, events.onProgress);
-      if (uploaded && "refusal" in uploaded) return { ok: false, reason: uploaded.refusal };
-      if (!uploaded) return { ok: false, reason: "failed" };
+      if ("stopped" in uploaded) return { ok: false, reason: uploaded.stopped };
+      if (uploaded.resumed) {
+        // Only the hand-off is tried again: Finishing up once the service answers.
+        return handOver({ uploadId: uploaded.uploadId, item }, POLL_EVERY_MS, events.onFinishing);
+      }
       events.onProgress(100);
       events.onFinishing();
       return handOver({ uploadId: uploaded.uploadId, item });
@@ -217,10 +253,16 @@ function createSubmission(submissionId: string): Submission {
  * Asks the service to hand an arrived file to ResourceSpace, and waits until
  * ResourceSpace has it. A big video takes minutes there, so the service may
  * answer 202 "finishing" at once; then the Item's status is polled (#55).
+ * `onAnswered` is told when the service answers that it is on it.
+ *
+ * When the connection drops, it says so and stops: asking again (the page's
+ * next try) is safe, since the service carries on with a hand-off already
+ * under way and answers from its record once it is done (#58).
  */
 export async function handOver(
   { uploadId, item }: { uploadId: string; item?: string },
   pollEveryMs = POLL_EVERY_MS,
+  onAnswered?: () => void,
 ): Promise<SendResult> {
   let res: Response;
   try {
@@ -232,34 +274,39 @@ export async function handOver(
       body: JSON.stringify({ uploadId, item }),
     });
   } catch {
-    // The connection dropped while waiting: the hand-off may be under way
-    // all the same, so ask how it is going.
+    return { ok: false, reason: "connection" };
+  }
+  if (res.status === 202) {
+    onAnswered?.();
     return finished(uploadId, pollEveryMs);
   }
-  if (res.status === 202) return finished(uploadId, pollEveryMs);
   if (res.ok) return { ok: true };
-  return { ok: false, reason: refusalIn(await res.text().catch(() => "")) ?? "failed" };
+  return { ok: false, reason: failureOf(res.status, await res.text().catch(() => "")) };
 }
 
 /** Polls the Item's status until the hand-off is over. "failed" lets the member try again, which picks up where it stopped. */
 async function finished(uploadId: string, pollEveryMs: number): Promise<SendResult> {
-  let misses = 0;
-  while (misses < POLL_MISSES) {
+  for (;;) {
     await new Promise((resolve) => setTimeout(resolve, pollEveryMs));
+    let res: Response;
     let body: { status?: unknown; error?: unknown };
     try {
-      const res = await fetch(`${ITEMS_ENDPOINT}/${encodeURIComponent(uploadId)}`, { credentials: "same-origin" });
-      if (res.status === 404) return { ok: false, reason: "failed" };
-      if (!res.ok) throw new Error(`status ${res.status}`);
+      res = await fetch(`${ITEMS_ENDPOINT}/${encodeURIComponent(uploadId)}`, { credentials: "same-origin" });
+    } catch {
+      return { ok: false, reason: "connection" };
+    }
+    if (res.status === 404) return { ok: false, reason: "failed" };
+    if (!res.ok) return { ok: false, reason: failureOf(res.status, await res.text().catch(() => "")) };
+    try {
       body = (await res.json()) as typeof body;
     } catch {
-      misses++;
-      continue;
+      return { ok: false, reason: "connection" };
     }
-    misses = 0;
+    if (body.status === "finishing") continue;
     if (body.status === "sent") return { ok: true };
     if (body.status === "refused" && isRefusal(body.error)) return { ok: false, reason: body.error };
-    if (body.status !== "finishing") return { ok: false, reason: "failed" };
+    // The service restarted before it began: asking again begins it.
+    if (body.status === "arrived") return { ok: false, reason: "connection" };
+    return { ok: false, reason: "failed" };
   }
-  return { ok: false, reason: "failed" };
 }
