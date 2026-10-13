@@ -1,24 +1,31 @@
 // How the page talks to the service when sending. The page depends only on
 // the `Sender` interface, so component tests (seam 2) swap in a fake; the real
 // one is headless Uppy with its tus plugin (#20): a Submission is started on
-// the service with the Step 2 answers (which it checks), each file goes up in
-// chunks into it, then one JSON call hands the arrived file to ResourceSpace.
+// the service with the Step 2 answers and each changed Item's own (which it
+// checks), each file goes up in chunks into it, then one JSON call hands the
+// arrived file to ResourceSpace, naming its Item (#57).
 import Uppy from "@uppy/core";
 import Tus from "@uppy/tus";
-import type { Details, FieldProblem, Options } from "../shared/details.ts";
+import type { Changes, Details, FieldProblem, ItemProblem, Options } from "../shared/details.ts";
 import { isRefusal, type Refusal } from "../shared/media.ts";
 
 /** What starts a Submission: how many will be sent, the Step 2 answers and the rights confirmation. */
 export interface Start {
   expectedItems: number;
   details: Details;
+  /** What each Item changed in Step 3, by its key (#57); only the Items that changed something. */
+  items?: Record<string, Changes>;
   rightsConfirmed: true;
 }
 
 export type BeginResult =
   | { ok: true; submission: Submission }
-  /** The service did not take the answers (a choice is no longer offered); with the choices as they are now. */
-  | { ok: false; reason: "invalid"; problems: FieldProblem[]; options?: Options }
+  /**
+   * The service did not take the answers (a choice is no longer offered);
+   * with the choices as they are now. A problem with one Item's own answer
+   * names the Item.
+   */
+  | { ok: false; reason: "invalid"; problems: (FieldProblem | ItemProblem)[]; options?: Options }
   | { ok: false; reason: "failed" };
 
 export type OptionsResult = { ok: true; options: Options } | { ok: false };
@@ -41,11 +48,12 @@ export type SendResult =
 
 export interface Submission {
   /**
-   * Sends one file into this Submission. Calling it again for the same file
-   * after a failure resumes and never duplicates. The page decides how many
-   * are sent at once.
+   * Sends one file into this Submission as the Item with this key, which says
+   * whose answers it gets (#57). Calling it again for the same file after a
+   * failure resumes and never duplicates. The page decides how many are sent
+   * at once.
    */
-  send(file: File, events: SendEvents): Promise<SendResult>;
+  send(file: File, events: SendEvents, item: string): Promise<SendResult>;
 }
 
 export interface Sender {
@@ -104,7 +112,7 @@ export function createSender(): Sender {
           return submissionId ? { ok: true, submission: createSubmission(submissionId) } : { ok: false, reason: "failed" };
         }
         if (res.status === 422) {
-          const body = (await res.json()) as { error?: string; problems?: FieldProblem[]; options?: Options };
+          const body = (await res.json()) as { error?: string; problems?: (FieldProblem | ItemProblem)[]; options?: Options };
           if (body.error === "invalid_details" && Array.isArray(body.problems)) {
             return { ok: false, reason: "invalid", problems: body.problems, options: body.options };
           }
@@ -193,13 +201,13 @@ function createSubmission(submissionId: string): Submission {
   }
 
   return {
-    async send(file, events) {
+    async send(file, events, item) {
       const uploaded = await upload(file, events.onProgress);
       if (uploaded && "refusal" in uploaded) return { ok: false, reason: uploaded.refusal };
       if (!uploaded) return { ok: false, reason: "failed" };
       events.onProgress(100);
       events.onFinishing();
-      return handOver(uploaded.uploadId);
+      return handOver({ uploadId: uploaded.uploadId, item });
     },
   };
 }
@@ -209,15 +217,18 @@ function createSubmission(submissionId: string): Submission {
  * ResourceSpace has it. A big video takes minutes there, so the service may
  * answer 202 "finishing" at once; then the Item's status is polled (#55).
  */
-export async function handOver(uploadId: string, pollEveryMs = POLL_EVERY_MS): Promise<SendResult> {
+export async function handOver(
+  { uploadId, item }: { uploadId: string; item?: string },
+  pollEveryMs = POLL_EVERY_MS,
+): Promise<SendResult> {
   let res: Response;
   try {
     res = await fetch(ITEMS_ENDPOINT, {
       method: "POST",
       credentials: "same-origin",
       headers: { "content-type": "application/json" },
-      // Only which upload: the answers are already the Submission's.
-      body: JSON.stringify({ uploadId }),
+      // Only which upload and which Item: the answers are already the Submission's.
+      body: JSON.stringify({ uploadId, item }),
     });
   } catch {
     // The connection dropped while waiting: the hand-off may be under way

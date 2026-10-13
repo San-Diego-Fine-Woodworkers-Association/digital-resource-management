@@ -1,10 +1,14 @@
 // Step 2, "Tell us about them" (#56): the details given once for everything
 // chosen. Title, the occasion (Program / Event) and what's in them (Subject
 // Type) are required, marked with the red `*` the legend explains, and a
-// plain Still-needed line names whatever is missing while the button stays
+// plain Still-needed line names whatever is missing while Next stays
 // disabled. The rest is optional. The occasion, subject and place choices are
 // the club's own lists, fetched live from ResourceSpace by the page; the
-// service checks the answers again when the member presses Send.
+// service checks the answers again when the member presses Send (Step 3).
+//
+// The same questions are asked again for one photo or video in Step 3's
+// dialog (#57), through `DetailFields`.
+import type { ReactNode } from "react";
 import {
   Button,
   Checkbox,
@@ -34,82 +38,51 @@ const NEEDED: Partial<Record<DetailField, string>> = {
 /** The Select item that empties the optional place again (never sent; only its key). */
 const NONE = "--leave-empty--";
 
-export function Describe({
-  count,
-  details,
+/**
+ * Every question Step 2 asks, in its order. For Step 2 (`forAll`) the
+ * required ones are marked and the hints shown. For one Item in Step 3 none
+ * is required (an empty box means "use the Step 2 answer"), and the place
+ * can be emptied only when Step 2 left it empty (`canEmptyPlace`).
+ */
+export function DetailFields({
+  values,
   onChange,
-  rights,
-  onRights,
-  options,
-  onRetryOptions,
+  live,
+  forAll,
+  canEmptyPlace,
   gone,
-  startFailed,
-  busy,
-  onSend,
-  focusHeading,
+  lists,
 }: {
-  /** How many photos and videos these details are for. */
-  count: number;
-  details: Details;
-  onChange: (details: Details) => void;
-  rights: boolean;
-  onRights: (rights: boolean) => void;
-  options: OptionsState;
-  onRetryOptions: () => void;
+  values: Details;
+  onChange: (change: Partial<Details>) => void;
+  /** The club's lists; the list questions are left out until they are here. */
+  live: Options | undefined;
+  forAll: boolean;
+  canEmptyPlace: boolean;
   /** Fields whose choice the club's list no longer has (the service said so on Send). */
   gone: DetailField[];
-  startFailed: boolean;
-  busy: boolean;
-  onSend: () => void;
-  focusHeading: boolean;
+  /** Shown where the lists go, before them (Step 2's loading and failure notes). */
+  lists?: ReactNode;
 }) {
-  const set = (change: Partial<Details>) => onChange({ ...details, ...change });
-  const needed = [...stillNeeded(details).map((f) => NEEDED[f]!), ...(rights ? [] : [copy.describe.neededRights])];
-  const live = options.status === "ready" ? options.options : undefined;
-
   return (
-    <StepFrame step={1} focusHeading={focusHeading}>
-      {count > 1 && <p className="text-lg">{copy.describe.appliesToAll(count)}</p>}
-      <p className="text-sm text-muted-foreground">
-        <span aria-hidden className="text-destructive">
-          *
-        </span>{" "}
-        {copy.describe.requiredLegend}
-      </p>
-
-      <TextField value={details.title} onChange={(title) => set({ title })} isRequired className="flex flex-col gap-1">
+    <>
+      <TextField value={values.title} onChange={(title) => onChange({ title })} isRequired={forAll} className="flex flex-col gap-1">
         <Label>{copy.describe.title}</Label>
         <Input maxLength={MAX_LENGTH.title} />
-        <Description>{copy.describe.titleHint}</Description>
+        {forAll && <Description>{copy.describe.titleHint}</Description>}
       </TextField>
 
-      {options.status === "loading" && (
-        <p role="status" className="text-base text-muted-foreground">
-          {copy.describe.loadingChoices}
-        </p>
-      )}
-      {options.status === "failed" && (
-        <Notification
-          variant="warning"
-          title={copy.describe.choicesFailed}
-          actions={
-            <Button variant="secondary" className="w-full" onPress={onRetryOptions}>
-              {copy.describe.tryAgain}
-            </Button>
-          }
-        />
-      )}
+      {lists}
       {live && (
         <>
           <Select
             label={copy.describe.occasion}
             placeholder={copy.describe.chooseOne}
-            isRequired
-            value={details.programevent || null}
-            onChange={(key) => set({ programevent: key == null ? "" : String(key) })}
+            isRequired={forAll}
+            value={values.programevent || null}
+            onChange={(key) => onChange({ programevent: key == null ? "" : String(key) })}
             isInvalid={gone.includes("programevent")}
             errorMessage={copy.describe.noLongerOffered}
-           
           >
             {live.programevent.map((name) => (
               <SelectItem key={name} id={name}>
@@ -119,9 +92,9 @@ export function Describe({
           </Select>
           <CheckboxGroup
             label={copy.describe.subjects}
-            isRequired
-            value={details.subjecttype}
-            onChange={(subjecttype) => set({ subjecttype })}
+            isRequired={forAll}
+            value={values.subjecttype}
+            onChange={(subjecttype) => onChange({ subjecttype })}
             isInvalid={gone.includes("subjecttype")}
             errorMessage={copy.describe.noLongerOffered}
           >
@@ -134,25 +107,24 @@ export function Describe({
         </>
       )}
 
-      <TextField value={details.date} onChange={(date) => set({ date })} className="flex flex-col gap-1">
+      <TextField value={values.date} onChange={(date) => onChange({ date })} className="flex flex-col gap-1">
         <Label>{copy.describe.date}</Label>
         {/* The phone's own date picker; it gives YYYY-MM-DD, or nothing. */}
         <Input type="date" />
-        <Description>{copy.describe.dateHint}</Description>
+        {forAll && <Description>{copy.describe.dateHint}</Description>}
       </TextField>
 
       {live && (
         <Select
           label={copy.describe.location}
           placeholder={copy.describe.chooseOne}
-          value={details.location || null}
-          onChange={(key) => set({ location: key == null || key === NONE ? "" : String(key) })}
+          value={values.location || null}
+          onChange={(key) => onChange({ location: key == null || key === NONE ? "" : String(key) })}
           isInvalid={gone.includes("location")}
           errorMessage={copy.describe.noLongerOffered}
-         
         >
           {[
-            ...(details.location
+            ...(values.location && canEmptyPlace
               ? [
                   <SelectItem key={NONE} id={NONE}>
                     {copy.describe.leaveEmpty}
@@ -168,15 +140,85 @@ export function Describe({
         </Select>
       )}
 
-      <TextField value={details.eventname} onChange={(eventname) => set({ eventname })} className="flex flex-col gap-1">
+      <TextField value={values.eventname} onChange={(eventname) => onChange({ eventname })} className="flex flex-col gap-1">
         <Label>{copy.describe.eventName}</Label>
         <Input maxLength={MAX_LENGTH.eventname} />
       </TextField>
 
-      <TextField value={details.caption} onChange={(caption) => set({ caption })} className="flex flex-col gap-1">
+      <TextField value={values.caption} onChange={(caption) => onChange({ caption })} className="flex flex-col gap-1">
         <Label>{copy.describe.caption}</Label>
         <TextArea maxLength={MAX_LENGTH.caption} />
       </TextField>
+    </>
+  );
+}
+
+export function Describe({
+  count,
+  details,
+  onChange,
+  rights,
+  onRights,
+  options,
+  onRetryOptions,
+  gone,
+  onNext,
+  focusHeading,
+}: {
+  /** How many photos and videos these details are for. */
+  count: number;
+  details: Details;
+  onChange: (details: Details) => void;
+  rights: boolean;
+  onRights: (rights: boolean) => void;
+  options: OptionsState;
+  onRetryOptions: () => void;
+  /** Fields whose choice the club's list no longer has (the service said so on Send). */
+  gone: DetailField[];
+  onNext: () => void;
+  focusHeading: boolean;
+}) {
+  const needed = [...stillNeeded(details).map((f) => NEEDED[f]!), ...(rights ? [] : [copy.describe.neededRights])];
+  const live = options.status === "ready" ? options.options : undefined;
+
+  return (
+    <StepFrame step={1} focusHeading={focusHeading}>
+      {count > 1 && <p className="text-lg">{copy.describe.appliesToAll(count)}</p>}
+      <p className="text-sm text-muted-foreground">
+        <span aria-hidden className="text-destructive">
+          *
+        </span>{" "}
+        {copy.describe.requiredLegend}
+      </p>
+
+      <DetailFields
+        values={details}
+        onChange={(change) => onChange({ ...details, ...change })}
+        live={live}
+        forAll
+        canEmptyPlace
+        gone={gone}
+        lists={
+          <>
+            {options.status === "loading" && (
+              <p role="status" className="text-base text-muted-foreground">
+                {copy.describe.loadingChoices}
+              </p>
+            )}
+            {options.status === "failed" && (
+              <Notification
+                variant="warning"
+                title={copy.describe.choicesFailed}
+                actions={
+                  <Button variant="secondary" className="w-full" onPress={onRetryOptions}>
+                    {copy.describe.tryAgain}
+                  </Button>
+                }
+              />
+            )}
+          </>
+        }
+      />
 
       <Checkbox isSelected={rights} onChange={onRights} isRequired>
         {copy.describe.rights}
@@ -187,20 +229,9 @@ export function Describe({
           {copy.describe.choiceGone}
         </p>
       )}
-      {startFailed && (
-        <p role="alert" className="text-base font-medium text-destructive">
-          {copy.describe.startFailed}
-        </p>
-      )}
       {needed.length > 0 && <p className="text-base font-medium">{copy.describe.stillNeeded(needed)}</p>}
-      <Button
-        variant="primary"
-       
-        className="w-full"
-        isDisabled={needed.length > 0 || !live || busy}
-        onPress={onSend}
-      >
-        {copy.describe.send}
+      <Button variant="primary" className="w-full" isDisabled={needed.length > 0 || !live} onPress={onNext}>
+        {copy.choose.next}
       </Button>
     </StepFrame>
   );

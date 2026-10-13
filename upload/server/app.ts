@@ -4,7 +4,7 @@
 //   /upload/assets/...     the built app's scripts and styles (public)
 //   /upload/api/...        the narrow API; session re-checked on every call
 //     GET /options         the live choices for the list fields (options.ts)
-//     POST /submissions    start a Submission with the Step 2 answers: its id goes on every upload (submissions.ts)
+//     POST /submissions    start a Submission with the Step 2 answers and any Item's own (Step 3): its id goes on every upload (submissions.ts)
 //     /files, /files/<id>  tus: each photo or video arrives in chunks (uploads.ts)
 //     POST /items          hand an arrived one to ResourceSpace (items.ts)
 //     GET /items/<id>      where that hand-off has got to; the page polls it
@@ -20,7 +20,7 @@ import { BOOT_ELEMENT_ID, type Boot } from "../shared/boot.ts";
 import { createAuditLog, stdoutSink, type AuditEvent, type AuditSink } from "./audit.ts";
 import type { Config } from "./config.ts";
 import { checkHealth } from "./health.ts";
-import { checkDetails } from "../shared/details.ts";
+import { checkDetails, checkItems, type Options } from "../shared/details.ts";
 import { createItems, type HandOffRequest, type HandOffResult } from "./items.ts";
 import { rightsRecord } from "./naming.ts";
 import { createLiveOptions } from "./options.ts";
@@ -69,8 +69,13 @@ const MIME: Record<string, string> = {
 
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
-/** A Submission's answers are a few KB at most (a 2000-character Caption); anything much bigger is not one. */
+/** A hand-off is an id or two; anything much bigger is not one. */
 const MAX_JSON_BODY = 16 * 1024;
+/**
+ * A Submission's answers: a few KB for Step 2 (a 2000-character Caption),
+ * plus up to 50 Items' own from Step 3 (#57), each at most the same again.
+ */
+const MAX_SUBMISSION_BODY = 256 * 1024;
 
 class BodyError extends Error {
   readonly status: number;
@@ -80,17 +85,17 @@ class BodyError extends Error {
   }
 }
 
-async function readJson(req: http.IncomingMessage): Promise<unknown> {
+async function readJson(req: http.IncomingMessage, max = MAX_JSON_BODY): Promise<unknown> {
   const type = (req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
   // Also keeps other sites out: a cross-site form cannot send application/json.
   if (type !== "application/json") throw new BodyError(415);
   const declared = Number(req.headers["content-length"] ?? "0");
-  if (declared > MAX_JSON_BODY) throw new BodyError(413);
+  if (declared > max) throw new BodyError(413);
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > MAX_JSON_BODY) throw new BodyError(413);
+    if (size > max) throw new BodyError(413);
     chunks.push(chunk as Buffer);
   }
   try {
@@ -100,12 +105,15 @@ async function readJson(req: http.IncomingMessage): Promise<unknown> {
   }
 }
 
-/** Only which upload; the answers come from its Submission's record. Anything else the page sends is ignored. */
+/**
+ * Only which upload, and the page's name for its Item (#57); the answers come
+ * from its Submission's record. Anything else the page sends is ignored.
+ */
 function parseHandOff(body: unknown): HandOffRequest | { error: string } {
   if (typeof body !== "object" || body === null) return { error: "invalid" };
   const b = body as Record<string, unknown>;
   if (typeof b.uploadId !== "string") return { error: "invalid" };
-  return { uploadId: b.uploadId };
+  return typeof b.item === "string" ? { uploadId: b.uploadId, item: b.item.slice(0, 64) } : { uploadId: b.uploadId };
 }
 
 /** The promise's value if it settles within `ms`, otherwise undefined (it carries on). */
@@ -337,14 +345,15 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
   }
 
   /**
-   * Starts a Submission from the Step 2 answers, checked here because
-   * ResourceSpace's API does not (ADR 0003): the required fields, and each
-   * choice against the live options. JSON only, so other sites cannot start one.
+   * Starts a Submission from the Step 2 answers and each changed Item's own
+   * (#57), checked here because ResourceSpace's API does not (ADR 0003): the
+   * required fields, and each choice against the live options. JSON only, so
+   * other sites cannot start one.
    */
   async function startSubmission(req: http.IncomingMessage, user: SessionUser, answer: Answer) {
     let body: Record<string, unknown>;
     try {
-      const raw = await readJson(req);
+      const raw = await readJson(req, MAX_SUBMISSION_BODY);
       if (typeof raw !== "object" || raw === null) throw new BodyError(400);
       body = raw as Record<string, unknown>;
     } catch (err) {
@@ -357,25 +366,35 @@ export function createService(config: Config, options: ServiceOptions = {}): htt
     }
     if (body.rightsConfirmed !== true) return answer(422, { error: "rights_required" }, "rights_required", user);
 
+    // Step 2's answers first; each Item's own are checked on top of them.
+    const check = (options: Options) => {
+      const details = checkDetails(body.details, options);
+      if ("problems" in details) return details;
+      const items = checkItems(body.items, details.details, options, expectedItems);
+      return "items" in items ? { ...details, ...items } : items;
+    };
     let checked;
     try {
-      checked = checkDetails(body.details, await liveOptions.get());
+      checked = check(await liveOptions.get());
       // A choice not in the cached list may have just been added: look again before refusing it.
       if ("problems" in checked && checked.problems.some((p) => p.problem === "not_offered")) {
-        checked = checkDetails(body.details, await liveOptions.get(0));
+        checked = check(await liveOptions.get(0));
       }
     } catch (err) {
       log("could not read the choices from ResourceSpace", { error: err instanceof Error ? err.message : String(err) });
       return answer(503, { error: "unavailable" }, "unavailable", user, { "Retry-After": "30" });
     }
+    if ("invalid" in checked) return answer(400, { error: "invalid" }, "invalid", user);
     if ("problems" in checked) {
       // With the choices as they are now, so the page can offer them again.
+      // A problem with one Item's own answer names the Item.
       return answer(422, { error: "invalid_details", problems: checked.problems, options: await liveOptions.get() }, "invalid_details", user);
     }
 
     const record = await submissions.create(user, {
       expectedItems,
       details: checked.details,
+      ...(Object.keys(checked.items).length > 0 ? { items: checked.items } : {}),
       rights: rightsRecord(new Date()),
     });
     const submissionId = record.submissionId;

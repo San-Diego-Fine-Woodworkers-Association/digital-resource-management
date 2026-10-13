@@ -1,10 +1,11 @@
 // The journey: choose photos and videos (many at once, #54), describe them
-// all once (#56), Send, thank-you (#53). Per-Item changes (step 3, #57) and
-// the full set of Item states and retries (#58, #59) build on this.
+// all once (#56), change any single one (optional, #57), Send, thank-you
+// (#53). The full set of Item states and retries (#58, #59) build on this.
 import { useEffect, useRef, useState } from "react";
 import { Button, FilePickerButton, Notification, ProgressBar } from "@sdwa/components";
-import { NO_DETAILS, type DetailField, type Details } from "../shared/details.ts";
+import { changedFields, NO_DETAILS, withChanges, type Changes, type DetailField, type Details } from "../shared/details.ts";
 import type { Refusal } from "../shared/media.ts";
+import { Change } from "./Change.tsx";
 import { choose, type Chosen, type Refused } from "./choose.ts";
 import { copy } from "./copy.ts";
 import { Describe, type OptionsState } from "./Describe.tsx";
@@ -36,7 +37,7 @@ const ACCEPTED = [
 /** How many are sent at once (#54). */
 const AT_ONCE = 2;
 
-type Step = "choose" | "describe" | "sending" | "done";
+type Step = "choose" | "describe" | "change" | "sending" | "done";
 
 type ItemState =
   | { status: "waiting" }
@@ -61,6 +62,10 @@ export function SendMedia({ sender }: { sender: Sender }) {
   // service said are gone; whether Send is starting or could not.
   const [options, setOptions] = useState<OptionsState>({ status: "loading" });
   const [gone, setGone] = useState<DetailField[]>([]);
+  // Step 3: what each one changed, by key, and any of those choices the
+  // service said are gone.
+  const [changes, setChanges] = useState<Record<string, Changes>>({});
+  const [goneFor, setGoneFor] = useState<Record<string, DetailField[]>>({});
   const [starting, setStarting] = useState(false);
   const [startFailed, setStartFailed] = useState(false);
   const [states, setStates] = useState<Record<string, ItemState>>({});
@@ -86,6 +91,38 @@ export function SendMedia({ sender }: { sender: Sender }) {
   const remove = (key: string) => {
     setChosen((c) => c.filter((i) => i.key !== key));
     setStates(({ [key]: _gone, ...rest }) => rest);
+    setChanges(({ [key]: _gone, ...rest }) => rest);
+    setGoneFor(({ [key]: _gone, ...rest }) => rest);
+  };
+
+  const change = (key: string, next: Changes) => {
+    // A field the member changes is no longer marked as gone.
+    const before = changes[key] ?? {};
+    setGoneFor((g) => {
+      const still = (g[key] ?? []).filter((f) => JSON.stringify(next[f]) === JSON.stringify(before[f]));
+      const { [key]: _old, ...rest } = g;
+      return still.length > 0 ? { ...rest, [key]: still } : rest;
+    });
+    setChanges((c) => ({ ...c, [key]: next }));
+  };
+
+  // Back from Step 3 to Step 2 keeps everything: the Step 2 answers, the
+  // rights tick and each one's changes. Each one keeps only the fields it
+  // actually changes (an override); every other field follows Step 2, so a
+  // Step 2 answer edited after Back reaches every one that didn't change it.
+  // A box the member typed back to the Step 2 answer is dropped here, so it
+  // isn't pinned to the old answer without a Changed badge saying so.
+  const back = () => {
+    setChanges((c) => {
+      const kept: Record<string, Changes> = {};
+      for (const [key, itemChanges] of Object.entries(c)) {
+        const fields = changedFields(details, itemChanges);
+        if (fields.length > 0) kept[key] = Object.fromEntries(fields.map((f) => [f, itemChanges[f]]));
+      }
+      return kept;
+    });
+    setStartFailed(false);
+    go("describe");
   };
 
   const loadOptions = () => {
@@ -108,11 +145,15 @@ export function SendMedia({ sender }: { sender: Sender }) {
     if (!s) return;
     inFlight.current.add(item.key);
     setState(item.key, { status: "sending", percent: 0 });
-    s.send(item.file, {
-      onProgress: (percent) =>
-        setStates((all) => (all[item.key]?.status === "sending" ? { ...all, [item.key]: { status: "sending", percent } } : all)),
-      onFinishing: () => setState(item.key, { status: "finishing" }),
-    })
+    s.send(
+      item.file,
+      {
+        onProgress: (percent) =>
+          setStates((all) => (all[item.key]?.status === "sending" ? { ...all, [item.key]: { status: "sending", percent } } : all)),
+        onFinishing: () => setState(item.key, { status: "finishing" }),
+      },
+      item.key,
+    )
       .catch(() => ({ ok: false as const, reason: "failed" as const }))
       .then((result) => {
         inFlight.current.delete(item.key);
@@ -134,12 +175,25 @@ export function SendMedia({ sender }: { sender: Sender }) {
     if (chosen.length > 0 && chosen.every((i) => states[i.key]?.status === "sent")) go("done");
   }, [step, chosen, states]);
 
+  /** Each one changed in Step 3, by key, with only what it changes. */
+  function itemChanges(): Record<string, Changes> {
+    const items: Record<string, Changes> = {};
+    for (const { key } of chosen) {
+      const fields = changedFields(details, changes[key]);
+      if (fields.length === 0) continue;
+      const item = withChanges(details, changes[key]);
+      items[key] = Object.fromEntries(fields.map((f) => [f, item[f]]));
+    }
+    return items;
+  }
+
   async function send() {
-    if (step !== "describe" || starting) return;
+    if (step !== "change" || starting) return;
     setStarting(true);
     setStartFailed(false);
+    const items = itemChanges();
     const result = await sender
-      .begin({ expectedItems: chosen.length, details, rightsConfirmed: true })
+      .begin({ expectedItems: chosen.length, details, ...(Object.keys(items).length ? { items } : {}), rightsConfirmed: true })
       .catch(() => ({ ok: false as const, reason: "failed" as const }));
     setStarting(false);
     if (result.ok) {
@@ -148,22 +202,40 @@ export function SendMedia({ sender }: { sender: Sender }) {
       go("sending");
       return;
     }
-    if (result.reason === "invalid" && result.problems.some((p) => p.problem === "not_offered")) {
-      // A choice was taken off the club's list after the page loaded: show
-      // the lists as they are now and ask again for what is gone.
-      const now = result.options;
-      if (now) setOptions({ status: "ready", options: now });
-      const fields = result.problems.filter((p) => p.problem === "not_offered").map((p) => p.field);
-      setGone(fields);
-      setDetails((d) => ({
-        ...d,
-        ...(fields.includes("programevent") ? { programevent: "" } : {}),
-        ...(fields.includes("location") ? { location: "" } : {}),
-        ...(fields.includes("subjecttype") ? { subjecttype: now ? d.subjecttype.filter((s) => now.subjecttype.includes(s)) : [] } : {}),
-      }));
+    const gonePs = result.reason === "invalid" ? result.problems.filter((p) => p.problem === "not_offered") : [];
+    if (gonePs.length === 0) {
+      setStartFailed(true);
       return;
     }
-    setStartFailed(true);
+    // A choice was taken off the club's list after the page loaded: show the
+    // lists as they are now and ask again for what is gone.
+    const now = result.reason === "invalid" ? result.options : undefined;
+    if (now) setOptions({ status: "ready", options: now });
+    const forAll = gonePs.filter((p) => !("item" in p)).map((p) => p.field);
+    if (forAll.length > 0) {
+      // One of the Step 2 answers: back to Step 2 for it.
+      setGone(forAll);
+      setDetails((d) => ({
+        ...d,
+        ...(forAll.includes("programevent") ? { programevent: "" } : {}),
+        ...(forAll.includes("location") ? { location: "" } : {}),
+        ...(forAll.includes("subjecttype") ? { subjecttype: now ? d.subjecttype.filter((s) => now.subjecttype.includes(s)) : [] } : {}),
+      }));
+      go("describe");
+      return;
+    }
+    // One single photo's or video's own: it goes back to the Step 2 answer
+    // for that question, marked, until the member chooses again or sends.
+    const byItem: Record<string, DetailField[]> = {};
+    for (const p of gonePs) if ("item" in p) (byItem[p.item] ??= []).push(p.field);
+    setGoneFor(byItem);
+    setChanges((c) => {
+      const next = { ...c };
+      for (const [key, fields] of Object.entries(byItem)) {
+        next[key] = Object.fromEntries(Object.entries(c[key] ?? {}).filter(([f]) => !fields.includes(f as DetailField)));
+      }
+      return next;
+    });
   }
 
   const startOver = () => {
@@ -174,13 +246,17 @@ export function SendMedia({ sender }: { sender: Sender }) {
     setDetails(NO_DETAILS);
     setRights(false);
     setGone([]);
+    setChanges({});
+    setGoneFor({});
     setStartFailed(false);
     go("choose");
   };
 
-  // Every Item was taken out while sending: back to the start.
+  // Every Item was taken out while sending: back to the start. Taken out in
+  // Step 3: back to choosing, keeping the answers.
   useEffect(() => {
     if (step === "sending" && chosen.length === 0) startOver();
+    if (step === "change" && chosen.length === 0) go("choose");
   }, [step, chosen.length]);
 
   switch (step) {
@@ -236,9 +312,30 @@ export function SendMedia({ sender }: { sender: Sender }) {
           options={options}
           onRetryOptions={loadOptions}
           gone={gone}
+          onNext={() => {
+            setStartFailed(false);
+            go("change");
+          }}
+          focusHeading={moved}
+        />
+      );
+
+    case "change":
+      // Next on Step 2 needs the lists, so they are here.
+      if (options.status !== "ready") return null;
+      return (
+        <Change
+          items={chosen}
+          details={details}
+          changes={changes}
+          onChange={change}
+          onRemove={remove}
+          live={options.options}
+          gone={goneFor}
           startFailed={startFailed}
           busy={starting}
           onSend={() => void send()}
+          onBack={back}
           focusHeading={moved}
         />
       );

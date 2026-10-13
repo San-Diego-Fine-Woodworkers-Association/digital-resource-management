@@ -9,8 +9,9 @@
 //
 // Each Submission has a record (#56): its id and short code, who started it
 // and when, how many Items the page said it would send, and the answers from
-// Step 2 with the rights confirmation, already checked (app.ts). Every Item
-// in it is written from this record. The record is also kept on the staging
+// Step 2 with the rights confirmation, already checked (app.ts), and the
+// answers of each Item changed in Step 3 (#57). Every Item in it is written
+// from this record. The record is also kept on the staging
 // volume, so Items already uploaded still get their answers after a restart.
 //
 // The limits are checked twice, because a file's kind is only known once its
@@ -58,6 +59,12 @@ export interface SubmissionRecord {
   expectedItems: number;
   /** The Step 2 answers, checked, for every Item. */
   details: Details;
+  /**
+   * The full answers of each Item changed in Step 3, checked, by the page's
+   * name for the Item, which its hand-off repeats (#57). Any other Item uses
+   * `details`.
+   */
+  items?: Record<string, Details>;
   /** The rights statement and when it was confirmed, as written on every Item. */
   rights: string;
 }
@@ -65,6 +72,7 @@ export interface SubmissionRecord {
 export interface Start {
   expectedItems: number;
   details: Details;
+  items?: Record<string, Details>;
   rights: string;
 }
 
