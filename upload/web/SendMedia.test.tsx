@@ -4,7 +4,7 @@
 // thank-you (#53).
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Boot } from "../shared/boot.ts";
 import type { Options } from "../shared/details.ts";
 import { App } from "./App.tsx";
@@ -643,13 +643,10 @@ describe("sending", () => {
       "Can't be added: That's the most videos we can take at once (10). Send this one next time.",
     );
     expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.mov", "c.jpg"]);
+    // It can be taken out while the rest carry on.
+    await user.click(screen.getByRole("button", { name: "Remove" }));
     await act(async () => calls[0]!.finish({ ok: true }));
     await act(async () => calls[2]!.finish({ ok: true }));
-    // Not the thank-you yet: the refused one is still on the list until it is taken out.
-    expect(screen.getByText("2 of 3 sent.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Remove" }));
 
     expect(screen.getByRole("heading", { name: "Thank you! We have your 2 photos." })).toBeInTheDocument();
   });
@@ -705,7 +702,8 @@ describe("sending", () => {
     expect(screen.queryByText("Couldn't save this one")).not.toBeInTheDocument();
     // The rest carry on.
     await act(async () => calls[1]!.finish({ ok: true }));
-    expect(screen.getByText("1 of 2 sent.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Most of your photos are in." })).toBeInTheDocument();
+    expect(screen.getByText("We're busy right now. Please try again in a few minutes.")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Try again" }));
     expect(calls).toHaveLength(3);
@@ -1213,5 +1211,287 @@ describe("changing any single one (step 3, optional)", () => {
     await user.click(sendButton());
     expect(starts[0]).not.toHaveProperty("items");
     expect(starts[0]!.details.caption).toBe("Day two");
+  });
+});
+
+/** Only the page's own pauses run on the test's clock. */
+const CLOCK: Parameters<typeof vi.useFakeTimers>[0] = { toFake: ["setTimeout", "clearTimeout"] };
+
+/**
+ * Presses a button while the test moves the clock: the press itself needs
+ * real timers. Only when no pause of the page's is running, as switching
+ * clocks drops it.
+ */
+async function press(button: HTMLElement) {
+  vi.useRealTimers();
+  await userEvent.setup().click(button);
+  vi.useFakeTimers(CLOCK);
+}
+
+describe("when things go wrong (#58)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const statusOf = (name: string) => within(screen.getByText(name).closest("li")!).getByRole("status");
+  const tryAgainIn = (name: string) => within(screen.getByText(name).closest("li")!).queryByRole("button", { name: "Try again" });
+
+  /** Chooses these, describes and sends them, then lets the test move the clock. */
+  async function sendingWithClock(files: File[]) {
+    const user = userEvent.setup();
+    const fake = fakeSender();
+    render(<App boot={boot} sender={fake.sender} />);
+    await pick(user, files);
+    await describeAndSend(user);
+    vi.useFakeTimers(CLOCK);
+    return fake;
+  }
+
+  const wait = (ms: number) => act(async () => vi.advanceTimersByTime(ms));
+  /** The last send of this file. */
+  const lastCall = (calls: Call[], name: string) => calls.filter((c) => c.file.name === name).at(-1)!;
+
+  it("shows Connection trouble and tries again by itself, resuming the same file in the same Submission", async () => {
+    const { calls, starts } = await sendingWithClock([photo("a.jpg")]);
+    act(() => calls[0]!.events.onProgress(40));
+
+    await act(async () => calls[0]!.finish({ ok: false, reason: "connection" }));
+
+    expect(statusOf("a.jpg")).toHaveTextContent("Connection dropped. Trying again…");
+    // Nothing for the member to do while it tries by itself.
+    expect(tryAgainIn("a.jpg")).not.toBeInTheDocument();
+    await wait(999);
+    expect(calls).toHaveLength(1);
+    await wait(1);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.file).toBe(calls[0]!.file);
+    expect(calls[1]!.submission).toBe(1);
+    expect(starts).toHaveLength(1);
+    // Still Connection trouble until the service answers.
+    expect(statusOf("a.jpg")).toHaveTextContent("Connection dropped. Trying again…");
+
+    act(() => calls[1]!.events.onProgress(60));
+    expect(statusOf("a.jpg")).toHaveTextContent("Sending…");
+    expect(screen.getByRole("progressbar", { name: "a.jpg" })).toHaveAttribute("aria-valuenow", "60");
+    await act(async () => calls[1]!.finish({ ok: true }));
+    expect(screen.getByRole("heading", { name: "Thank you! We have your 1 photo." })).toBeInTheDocument();
+  });
+
+  it("tries again at about 1, 3, 10, 30 and 60 seconds, then every minute for about 10 minutes, then waits for the member", async () => {
+    const { calls } = await sendingWithClock([photo("a.jpg")]);
+    const schedule = [1, 3, 10, 30, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60];
+
+    await act(async () => calls[0]!.finish({ ok: false, reason: "connection" }));
+    for (const [i, seconds] of schedule.entries()) {
+      await wait(seconds * 1000 - 1);
+      expect(calls, `try ${i + 1} not before ${seconds} s`).toHaveLength(i + 1);
+      await wait(1);
+      expect(calls, `try ${i + 1} after ${seconds} s`).toHaveLength(i + 2);
+      expect(statusOf("a.jpg")).toHaveTextContent("Connection dropped. Trying again…");
+      await act(async () => calls.at(-1)!.finish({ ok: false, reason: "connection" }));
+    }
+
+    expect(statusOf("a.jpg")).toHaveTextContent("Waiting for your connection");
+    await wait(10 * 60 * 1000);
+    expect(calls).toHaveLength(schedule.length + 1);
+
+    await press(tryAgainIn("a.jpg")!);
+    expect(calls).toHaveLength(schedule.length + 2);
+    // Try again starts the schedule over.
+    await act(async () => calls.at(-1)!.finish({ ok: false, reason: "connection" }));
+    expect(statusOf("a.jpg")).toHaveTextContent("Connection dropped. Trying again…");
+    await wait(1000);
+    expect(calls).toHaveLength(schedule.length + 3);
+  });
+
+  it("starts the schedule over once the service answers again", async () => {
+    const { calls } = await sendingWithClock([video("c.mov")]);
+
+    await act(async () => calls[0]!.finish({ ok: false, reason: "connection" }));
+    await wait(1000);
+    await act(async () => calls[1]!.finish({ ok: false, reason: "connection" }));
+    await wait(3000);
+    expect(calls).toHaveLength(3);
+    // The file is all there; the service says it is handing it over.
+    act(() => calls[2]!.events.onFinishing());
+    expect(statusOf("c.mov")).toHaveTextContent("Finishing up… (videos can take a few minutes)");
+    await act(async () => calls[2]!.finish({ ok: false, reason: "connection" }));
+
+    await wait(1000);
+    expect(calls).toHaveLength(4);
+  });
+
+  it("keeps the rest going while one has Connection trouble", async () => {
+    const { calls } = await sendingWithClock([photo("a.jpg"), photo("b.jpg"), photo("c.jpg")]);
+    expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg"]);
+
+    await act(async () => calls[0]!.finish({ ok: false, reason: "connection" }));
+
+    // Its place goes to the next one while it pauses.
+    expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg", "c.jpg"]);
+    // Its try waits for a free place: two at a time still.
+    await wait(1000);
+    expect(calls).toHaveLength(3);
+    expect(statusOf("a.jpg")).toHaveTextContent("Connection dropped. Trying again…");
+    await act(async () => calls[1]!.finish({ ok: true }));
+    expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg", "c.jpg", "a.jpg"]);
+  });
+
+  it("keeps the rest going while one Couldn't save, and offers Try again for it", async () => {
+    const { calls } = await sendingWithClock([photo("a.jpg"), photo("b.jpg"), photo("c.jpg")]);
+
+    await act(async () => calls[0]!.finish({ ok: false, reason: "failed" }));
+
+    expect(statusOf("a.jpg")).toHaveTextContent("Couldn't save this one");
+    expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg", "c.jpg"]);
+    // Never by itself: only the member's Try again, while the page is open.
+    await wait(60 * 60 * 1000);
+    expect(calls).toHaveLength(3);
+    await press(tryAgainIn("a.jpg")!);
+    // Waiting for a free place: two at a time still.
+    expect(statusOf("a.jpg")).toHaveTextContent("Waiting…");
+    await act(async () => calls[1]!.finish({ ok: true }));
+    expect(calls).toHaveLength(4);
+    expect(lastCall(calls, "a.jpg").file).toBe(calls[0]!.file);
+  });
+
+  it("announces Connection trouble and Waiting for your connection to screen readers", async () => {
+    const { calls } = await sendingWithClock([photo("a.jpg")]);
+    const status = screen.getByRole("status");
+
+    await act(async () => calls[0]!.finish({ ok: false, reason: "connection" }));
+    expect(status).toHaveTextContent("Connection dropped. Trying again…");
+    for (const seconds of [1, 3, 10, 30, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60]) {
+      await wait(seconds * 1000);
+      await act(async () => calls.at(-1)!.finish({ ok: false, reason: "connection" }));
+    }
+    expect(status).toHaveTextContent("Waiting for your connection");
+  });
+});
+
+describe("the end when some were not sent (#58)", () => {
+  it("says most are in, lists the ones not sent, and Try again sends just those", async () => {
+    const user = userEvent.setup();
+    const { sender, calls } = fakeSender();
+    render(<App boot={boot} sender={sender} />);
+    await pick(user, [photo("a.jpg"), photo("b.jpg"), video("c.mov")]);
+    await describeAndSend(user);
+
+    await act(async () => calls[0]!.finish({ ok: true }));
+    await act(async () => calls[1]!.finish({ ok: false, reason: "failed" }));
+    await act(async () => calls[2]!.finish({ ok: true }));
+
+    const heading = screen.getByRole("heading", { name: "Most of your photos are in." });
+    expect(heading).toHaveFocus();
+    expect(
+      screen.getByText("1 of 3 didn't make it. Try those again now, or come back later and choose them again."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("b.jpg")).toBeInTheDocument();
+    expect(screen.queryByText("a.jpg")).not.toBeInTheDocument();
+    expect(screen.getByText("Couldn't save this one")).toBeInTheDocument();
+    expect(screen.queryByText(/^Thank you!/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(screen.getByRole("heading", { level: 2, name: "Sending" })).toHaveFocus();
+    expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg", "c.mov", "b.jpg"]);
+    expect(screen.getByText("2 of 3 sent.")).toBeInTheDocument();
+    await act(async () => calls[3]!.finish({ ok: true }));
+    expect(screen.getByRole("heading", { name: "Thank you! We have your 2 photos and 1 video." })).toBeInTheDocument();
+  });
+
+  it("lists one still waiting for the connection, and its way out keeps what was sent", async () => {
+    try {
+      const user = userEvent.setup();
+      const { sender, calls } = fakeSender();
+      render(<App boot={boot} sender={sender} />);
+      await pick(user, [photo("a.jpg"), photo("b.jpg")]);
+      await describeAndSend(user);
+      vi.useFakeTimers(CLOCK);
+
+      await act(async () => calls[0]!.finish({ ok: true }));
+      await act(async () => calls[1]!.finish({ ok: false, reason: "connection" }));
+      // Not the end while it still tries by itself.
+      expect(screen.queryByRole("heading", { name: "Most of your photos are in." })).not.toBeInTheDocument();
+      for (const seconds of [1, 3, 10, 30, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60]) {
+        await act(async () => vi.advanceTimersByTime(seconds * 1000));
+        await act(async () => calls.at(-1)!.finish({ ok: false, reason: "connection" }));
+      }
+
+      expect(screen.getByRole("heading", { name: "Most of your photos are in." })).toHaveFocus();
+      expect(screen.getByText(/^1 of 2 didn't make it\./)).toBeInTheDocument();
+      expect(screen.getByText("Waiting for your connection")).toBeInTheDocument();
+
+      await press(screen.getByRole("button", { name: "I'll do the rest later" }));
+
+      expect(screen.getByRole("heading", { name: "Thank you! We have your 1 photo." })).toHaveFocus();
+      expect(screen.getByText("A volunteer will take a look before they appear on the SDFWA media site.")).toBeInTheDocument();
+      expect(
+        screen.getByText("The ones that didn't go through weren't sent. You can share them again any time."),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/You don't need to do anything else/)).not.toBeInTheDocument();
+      const sends = calls.length;
+      await act(async () => vi.advanceTimersByTime(60 * 60 * 1000));
+      expect(calls).toHaveLength(sends);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stays on Sending, each with its Try again, when none was sent", async () => {
+    const user = userEvent.setup();
+    const { sender, calls } = fakeSender();
+    render(<App boot={boot} sender={sender} />);
+    await pick(user, [photo("a.jpg"), photo("b.jpg")]);
+    await describeAndSend(user);
+
+    await act(async () => calls[0]!.finish({ ok: false, reason: "failed" }));
+    await act(async () => calls[1]!.finish({ ok: false, reason: "busy" }));
+
+    expect(screen.getByRole("heading", { level: 2, name: "Sending" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Try again" })).toHaveLength(2);
+  });
+
+  it("lists one that can't be added with its reason, and Try again is only for the others", async () => {
+    const user = userEvent.setup();
+    const { sender, calls } = fakeSender();
+    render(<App boot={boot} sender={sender} />);
+    await pick(user, [photo("a.jpg"), photo("b.jpg"), photo("c.jpg")]);
+    await describeAndSend(user);
+
+    await act(async () => calls[0]!.finish({ ok: true }));
+    await act(async () => calls[1]!.finish({ ok: false, reason: "too_many_today" }));
+    await act(async () => calls[2]!.finish({ ok: false, reason: "failed" }));
+
+    expect(screen.getByRole("heading", { name: "Most of your photos are in." })).toHaveFocus();
+    expect(screen.getByText(/^2 of 3 didn't make it\./)).toBeInTheDocument();
+    expect(screen.getByText(/^Can't be added:/)).toHaveTextContent(
+      "Can't be added: That's the most we can take from you in one day. Please send this one tomorrow.",
+    );
+    expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    // Only the one that couldn't be saved is sent again.
+    expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg", "c.jpg", "c.jpg"]);
+    await act(async () => calls[3]!.finish({ ok: true }));
+    expect(screen.getByRole("heading", { name: "Most of your photos are in." })).toBeInTheDocument();
+    expect(screen.getByText(/^1 of 3 didn't make it\./)).toBeInTheDocument();
+  });
+
+  it("offers no Try again when the only ones not sent can't be added", async () => {
+    const user = userEvent.setup();
+    const { sender, calls } = fakeSender();
+    render(<App boot={boot} sender={sender} />);
+    await pick(user, [photo("a.jpg"), video("b.mov")]);
+    await describeAndSend(user);
+
+    await act(async () => calls[0]!.finish({ ok: true }));
+    await act(async () => calls[1]!.finish({ ok: false, reason: "too_many_videos" }));
+
+    expect(screen.getByRole("heading", { name: "Most of your photos are in." })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "I'll do the rest later" }));
+    expect(screen.getByRole("heading", { name: "Thank you! We have your 1 photo." })).toBeInTheDocument();
   });
 });

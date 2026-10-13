@@ -1,0 +1,145 @@
+// Where each Item is while the page sends it, and what moves it on (#58, #30).
+//
+// Six states a member can see, each with at most one thing to do:
+//   Sending             chunks going up                       nothing needed
+//   Finishing up        the service is handing it over        nothing needed
+//   Sent                in ResourceSpace                       nothing needed
+//   Connection trouble  tried again by itself on a schedule;   Try again (once
+//                       when that runs out, "Waiting for your  it is waiting)
+//                       connection"
+//   Can't be added      the service will never take it         Remove
+//   Couldn't save       ResourceSpace failed, after the        Try again
+//                       service's own retries
+// plus Waiting (its turn has not come; two are sent at a time) and Busy (the
+// service can't take it just now, #60).
+//
+// This is only the rules; SendMedia.tsx keeps the timers and the queue. Every
+// Item has its own state, so one that fails never holds up the rest.
+//
+// Built so #59 can add to it without changing what is here: going offline
+// can stop the timers (a `pause` event that holds every Connection trouble
+// Item where it is), coming back online or to the foreground can make every
+// one due at once (a `resume` event, the same as Try again for each), a
+// signed-out session can hold the queue the way `canStart` already does for
+// a step that is not showing, and "busy" can take the same schedule as
+// Connection trouble by mapping it to a `connection` result.
+import type { Refusal } from "../shared/media.ts";
+import type { SendResult } from "./send.ts";
+
+/**
+ * The pauses before each automatic try after the connection drops: about 1,
+ * 3, 10, 30 and 60 seconds, then every minute for about 10 minutes. After the
+ * last one the Item waits for the member's Try again.
+ */
+export const RETRY_DELAYS_MS: readonly number[] = [1000, 3000, 10_000, 30_000, 60_000, ...Array<number>(10).fill(60_000)];
+
+export type ItemState =
+  | { status: "waiting" }
+  | { status: "sending"; percent: number }
+  | { status: "finishing" }
+  | { status: "sent" }
+  /**
+   * Connection trouble: `tries` is which automatic try comes next (1 for the
+   * first) since the service last answered. "pausing" until that try is due, "due" while it waits for
+   * a free place in the queue, "trying" while that try runs.
+   */
+  | { status: "connection"; tries: number; phase: "pausing" | "due" | "trying" }
+  /** Connection trouble after every automatic try: Waiting for your connection. */
+  | { status: "stalled" }
+  /** Couldn't save. */
+  | { status: "failed" }
+  /** The service can't take it just now (#60). */
+  | { status: "busy" }
+  /** Can't be added. */
+  | { status: "refused"; refusal: Refusal };
+
+export type ItemEvent =
+  /** A send begins: its turn came, or its next automatic try. */
+  | { type: "start" }
+  /** Some of the file reached the service. */
+  | { type: "progress"; percent: number }
+  /** All of it is there and the service is handing it over. */
+  | { type: "finishing" }
+  | { type: "result"; result: SendResult }
+  /** The pause before the next automatic try is over. */
+  | { type: "retryDue" }
+  /** The member pressed Try again. */
+  | { type: "tryAgain" };
+
+export const WAITING: ItemState = { status: "waiting" };
+
+export function nextState(state: ItemState, event: ItemEvent): ItemState {
+  switch (event.type) {
+    case "start":
+      if (state.status === "waiting") return { status: "sending", percent: 0 };
+      // Still Connection trouble until the service answers.
+      if (state.status === "connection" && state.phase === "due") return { ...state, phase: "trying" };
+      return state;
+
+    case "progress":
+      // Any answer from the service ends the trouble, and the schedule starts over next time.
+      if (state.status === "sending" || isTrying(state)) return { status: "sending", percent: event.percent };
+      return state;
+
+    case "finishing":
+      if (state.status === "sending" || isTrying(state)) return { status: "finishing" };
+      return state;
+
+    case "result": {
+      if (!isActive(state)) return state;
+      const { result } = event;
+      if (result.ok) return { status: "sent" };
+      switch (result.reason) {
+        case "connection":
+          // The first trouble starts the schedule; each failed try moves along it.
+          if (!isTrying(state)) return { status: "connection", tries: 1, phase: "pausing" };
+          if (state.tries >= RETRY_DELAYS_MS.length) return { status: "stalled" };
+          return { status: "connection", tries: state.tries + 1, phase: "pausing" };
+        case "failed":
+          return { status: "failed" };
+        case "busy":
+          return { status: "busy" };
+        default:
+          return { status: "refused", refusal: result.reason };
+      }
+    }
+
+    case "retryDue":
+      if (state.status === "connection" && state.phase === "pausing") return { ...state, phase: "due" };
+      return state;
+
+    case "tryAgain":
+      if (state.status === "failed" || state.status === "stalled" || state.status === "busy") return WAITING;
+      return state;
+  }
+}
+
+function isTrying(state: ItemState): state is Extract<ItemState, { status: "connection" }> {
+  return state.status === "connection" && state.phase === "trying";
+}
+
+/** A send is running for it. */
+export function isActive(state: ItemState): boolean {
+  return state.status === "sending" || state.status === "finishing" || isTrying(state);
+}
+
+/** It may start a send as soon as there is room: its turn, or its next automatic try. */
+export function canStart(state: ItemState): boolean {
+  return state.status === "waiting" || (state.status === "connection" && state.phase === "due");
+}
+
+/** How long until its next automatic try, if it is pausing before one. */
+export function retryDelay(state: ItemState): number | undefined {
+  if (state.status !== "connection" || state.phase !== "pausing") return undefined;
+  return RETRY_DELAYS_MS[state.tries - 1];
+}
+
+/** Nothing more will happen to it unless the member acts: it is sent, or it needs them. */
+export function isSettled(state: ItemState): boolean {
+  return ["sent", "stalled", "failed", "busy", "refused"].includes(state.status);
+}
+
+/** Settled without being sent, and Try again may still send it. */
+export function canTryAgain(state: ItemState): boolean {
+  return state.status === "stalled" || state.status === "failed" || state.status === "busy";
+}

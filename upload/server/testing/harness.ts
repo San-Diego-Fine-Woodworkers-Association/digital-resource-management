@@ -137,7 +137,16 @@ export interface Harness {
   close: () => Promise<void>;
 }
 
-export async function startHarness(env: Record<string, string> = {}): Promise<Harness> {
+export interface HarnessOptions {
+  /**
+   * The hand-off's own pauses before trying ResourceSpace again (items.ts).
+   * None by default, so a test's failure on demand reaches the page as it is;
+   * the tests of those retries set them.
+   */
+  rsRetryDelaysMs?: number[];
+}
+
+export async function startHarness(env: Record<string, string> = {}, opts: HarnessOptions = {}): Promise<Harness> {
   const auth = await startFake(signedOut);
   const fakeRs = createFakeResourceSpace();
   const rs = await startFake((req) =>
@@ -174,6 +183,7 @@ export async function startHarness(env: Record<string, string> = {}): Promise<Ha
       auditSink: (line) => auditLines.push(line),
       log: (message, fields) => logLines.push({ message, fields }),
       readBackRetryDelayMs: 1,
+      rsRetryDelaysMs: opts.rsRetryDelaysMs ?? [],
       // Real time, moved on by `advance`, so the times of files on staging still compare.
       now: () => Date.now() + skew,
       stagingStats: async (dir) => h.volume ?? statVolume(dir),

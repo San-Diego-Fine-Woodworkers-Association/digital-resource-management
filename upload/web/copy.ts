@@ -169,6 +169,10 @@ export const copy = {
     finishingVideo: "Finishing up… (videos can take a few minutes)",
     sent: "✓ Sent",
     couldNotSave: "Couldn't save this one",
+    // #31's Connection trouble lines (#58): trying again by itself, then
+    // waiting for the member once the automatic tries run out.
+    connection: "Connection dropped. Trying again…",
+    waitingForConnection: "Waiting for your connection",
     tryAgain: "Try again",
     cannotAdd: (reason: string) => `Can't be added: ${reason}`,
     remove: "Remove",
@@ -183,7 +187,20 @@ export const copy = {
     title: (photos: number, videos: number) => `Thank you! We have your ${countWords(photos, videos)}.`,
     next: "A volunteer will take a look before they appear on the SDFWA media site.",
     nothingElse: "You don't need to do anything else, and you can close this page.",
+    // Not on #31 (#58): in place of nothingElse after "I'll do the rest
+    // later", when some weren't sent. Approved in the #58 review.
+    notAllSent: "The ones that didn't go through weren't sent. You can share them again any time.",
     more: "Share more photos or videos",
+  },
+
+  // #31's "Some failed" end screen (#58): shown instead of the thank-you
+  // when any of them was not sent.
+  someNotSent: {
+    title: "Most of your photos are in.",
+    notSent: (notSent: number, total: number) =>
+      `${notSent} of ${total} didn't make it. Try those again now, or come back later and choose them again.`,
+    tryAgain: "Try again",
+    later: "I'll do the rest later",
   },
 
   notMember: {

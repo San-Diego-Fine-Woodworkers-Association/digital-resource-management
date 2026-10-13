@@ -175,7 +175,7 @@ export function createStaging(opts: {
       }
       found.delete(name);
     };
-    /** Removes a hand-off record; one that stopped partway is logged with its ref, for a Reviewer to clear. */
+    /** Removes a hand-off record; one that stopped partway is logged with its ref (or the unanswered create), for a Reviewer to clear. */
     const forgetItem = async (e: Entry) => {
       const record = await readJson(e.name);
       if (typeof record?.ref === "number" && record.sent !== true) {
@@ -183,6 +183,13 @@ export function createStaging(opts: {
           uploadId: e.name.slice(0, 32),
           ref: record.ref,
           submissionId: record.submissionId,
+        });
+      } else if (typeof record?.creatingSince === "string" && record.ref === undefined) {
+        // ResourceSpace never answered the create (#58): it may have made an empty Item.
+        log("gave up on an Item whose create got no answer from ResourceSpace: it may hold an empty Item from it", {
+          uploadId: e.name.slice(0, 32),
+          submissionId: record.submissionId,
+          askedAt: record.creatingSince,
         });
       }
       await remove(e.name);
