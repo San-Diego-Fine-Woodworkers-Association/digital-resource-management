@@ -100,6 +100,6 @@ describe("handing an arrived file over", () => {
     ["too_much_staged", 429],
   ])("says the service is busy when it answers %s (#60)", async (error, status) => {
     service(json(status, { error }));
-    expect(await handOver(ID, 1)).toEqual({ ok: false, reason: "busy" });
+    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: false, reason: "busy" });
   });
 });
