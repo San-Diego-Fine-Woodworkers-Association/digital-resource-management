@@ -143,16 +143,16 @@ export const copy = {
     changed: "Changed",
     send: "Send them",
     // Not on #31 (#57): back from Step 3 to Step 2, keeping every answer and
-    // every change. Needs a read-through.
+    // every change. Approved in the #57 review.
     back: "Back",
     // Not on #31 (#57): the tile's and the dialog's names, from the
     // prototype's "Change details for ...". The tile's says when it is
-    // changed, as its badge does. Needs a read-through.
+    // changed, as its badge does. Approved in the #57 review.
     open: (name: string, changed: boolean) => `Change details for ${name}${changed ? " (Changed)" : ""}`,
     dialogTitle: (name: string) => `Change details for ${name}`,
     // Not on #31 (#57): a choice made for one photo or video was taken off
     // the club's list after the page loaded. In the pattern of #56's
-    // choiceGone. Needs a read-through.
+    // choiceGone. Approved in the #57 review.
     choiceGone: (names: string[]) =>
       `A choice you made for ${names.join(", ")} is no longer on the list. Tap it to choose again, or press Send to use what you entered in the last step.`,
   },
