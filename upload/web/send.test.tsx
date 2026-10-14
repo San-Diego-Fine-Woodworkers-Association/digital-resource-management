@@ -4,7 +4,7 @@
 // and stops, and the page tries again on its schedule (#58). The service's
 // answers are faked.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { failureOf, handOver } from "./send.ts";
+import { createSender, failureOf, handOver } from "./send.ts";
 
 const ID = "0123456789abcdef0123456789abcdef";
 
@@ -127,9 +127,53 @@ describe("why a request stopped (#58)", () => {
     [429, JSON.stringify({ error: "rate_limited" }), "busy"],
     [413, JSON.stringify({ error: "too_big" }), "too_big"],
     [502, JSON.stringify({ error: "not_saved" }), "failed"],
-    [401, JSON.stringify({ error: "signed_out" }), "failed"],
+    // #59: the member, not the file: the page holds everything until they are back.
+    [401, JSON.stringify({ error: "signed_out", signInUrl: "https://auth.example.org/login" }), "signed_out"],
+    [403, JSON.stringify({ error: "not_member", renewUrl: "https://www.example.org/renew" }), "not_member"],
+    // The kill switch turned on mid-send: busy, so the page keeps trying (#30, #59).
+    [503, JSON.stringify({ error: "paused" }), "busy"],
+    [401, "", "failed"],
+    [403, JSON.stringify({ error: "forbidden" }), "failed"],
     [500, "", "failed"],
   ] as const)("%s %s is %s", (status, body, reason) => {
     expect(failureOf(status, body)).toBe(reason);
+  });
+});
+
+describe("asking again who is signed in (#59)", () => {
+  const answers = (reply: Response | Error) => {
+    const fetch = vi.fn(async () => {
+      if (reply instanceof Error) throw reply;
+      return reply;
+    });
+    vi.stubGlobal("fetch", fetch);
+    return fetch;
+  };
+
+  it("asks the service's session endpoint, never from the browser's cache", async () => {
+    const fetch = answers(json(200, { user: { name: "Pat", email: "pat@example.org" } }));
+
+    expect(await createSender().session()).toBe("signed_in");
+    expect(fetch).toHaveBeenCalledWith("/upload/api/session", expect.objectContaining({ cache: "no-store" }));
+  });
+
+  it.each([
+    [json(401, { error: "signed_out" }), "signed_out"],
+    [json(403, { error: "not_member" }), "not_member"],
+    [json(503, { error: "auth_unavailable" }), "unknown"],
+    [new TypeError("Failed to fetch"), "unknown"],
+  ] as const)("says %s as %s", async (reply, check) => {
+    answers(reply);
+
+    expect(await createSender().session()).toBe(check);
+  });
+
+  it("says when Send finds the member signed out, so nothing is lost", async () => {
+    answers(json(401, { error: "signed_out" }));
+
+    expect(await createSender().begin({ expectedItems: 1, details: {} as never, rightsConfirmed: true })).toEqual({
+      ok: false,
+      reason: "signed_out",
+    });
   });
 });

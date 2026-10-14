@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   canStart,
   canTryAgain,
+  isBusyTrouble,
   isSettled,
   nextState,
   RETRY_DELAYS_MS,
@@ -61,8 +62,10 @@ describe("Item states", () => {
 
   it.each([
     ["failed", { status: "failed" }],
-    ["busy", { status: "busy" }],
     ["too_big", { status: "refused", refusal: "too_big" }],
+    // #59: the member's session, not the file: it waits to go again from where it stopped.
+    ["signed_out", WAITING],
+    ["not_member", WAITING],
   ] as const)("map a %s result to its state", (reason, state) => {
     expect(run(WAITING, { type: "start" }, { type: "result", result: { ok: false, reason } })).toEqual(state);
   });
@@ -72,5 +75,41 @@ describe("Item states", () => {
     expect(canTryAgain({ status: "busy" })).toBe(true);
     expect(canTryAgain({ status: "refused", refusal: "wrong_type" })).toBe(false);
     expect(run({ status: "refused", refusal: "wrong_type" }, { type: "tryAgain" })).toEqual({ status: "refused", refusal: "wrong_type" });
+  });
+
+  it("put a busy one on the same schedule, marked busy, and Busy with Try again once it runs out (#59)", () => {
+    const busy: ItemEvent = { type: "result", result: { ok: false, reason: "busy" } };
+    let state = run(WAITING, { type: "start" }, busy);
+    expect(state).toEqual({ status: "connection", tries: 1, phase: "pausing", busy: true });
+    expect(isBusyTrouble(state)).toBe(true);
+    const delays: (number | undefined)[] = [];
+    while (state.status === "connection") {
+      delays.push(retryDelay(state));
+      state = run(state, { type: "retryDue" }, { type: "start" }, busy);
+    }
+    expect(delays).toEqual([...RETRY_DELAYS_MS]);
+    expect(state).toEqual({ status: "busy" });
+    expect(canTryAgain(state)).toBe(true);
+    // The connection dropping on a busy one's try is Connection trouble again.
+    expect(isBusyTrouble(run(WAITING, { type: "start" }, busy, ...retry))).toBe(false);
+  });
+
+  it("make every automatic try due at once on resume, and one more for Waiting for your connection (#59)", () => {
+    const pausing = run(WAITING, { type: "start" }, dropped, ...retry);
+    const resumed = run(pausing, { type: "resume" });
+    expect(resumed).toEqual({ status: "connection", tries: 2, phase: "due" });
+    expect(canStart(resumed)).toBe(true);
+
+    const stalled: ItemState = { status: "stalled" };
+    const again = run(stalled, { type: "resume" });
+    expect(canStart(again)).toBe(true);
+    expect(run(again, { type: "start" }, dropped)).toEqual(stalled);
+
+    // Nothing else moves: not one sending, nor one that needs the member.
+    for (const state of [WAITING, { status: "sending", percent: 5 }, { status: "failed" }, { status: "busy" }] as ItemState[]) {
+      expect(run(state, { type: "resume" })).toBe(state);
+    }
+    const trying = run(pausing, { type: "retryDue" }, { type: "start" });
+    expect(run(trying, { type: "resume" })).toBe(trying);
   });
 });

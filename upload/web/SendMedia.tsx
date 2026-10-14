@@ -3,17 +3,28 @@
 // (#53). Each Item's state and its automatic tries are itemState.ts (#58); at
 // the end, the thank-you, or "Most of your photos are in" when any was not
 // sent.
+//
+// Interruptions (#59): while sending, the screen is kept awake and leaving
+// the page asks first. Offline, or signed out, or no longer a member, the
+// page holds: nothing new starts and no automatic try runs, and it carries
+// on when the connection is back or the member has signed in again (in a
+// new tab, so the chosen photos stay here). A busy service holds the rest of
+// the queue while its Item tries again on the Connection trouble schedule.
+// Steps 1 to 3 are browser history entries (stepHistory.ts).
 import { useEffect, useRef, useState } from "react";
-import { Button, FilePickerButton, Notification, ProgressBar } from "@sdwa/components";
+import { Button, FilePickerButton, Link, Notification, ProgressBar } from "@sdwa/components";
+import { SIGNED_IN_PATH, type ShellUser } from "../shared/boot.ts";
 import { changedFields, NO_DETAILS, withChanges, type Changes, type DetailField, type Details } from "../shared/details.ts";
 import { Change } from "./Change.tsx";
 import { choose, type Chosen, type Refused } from "./choose.ts";
 import { copy } from "./copy.ts";
 import { Describe, type OptionsState } from "./Describe.tsx";
 import { Gallery, Thumb } from "./Gallery.tsx";
+import { browserOffline, useLeaveWarning, usePageEvents, useWakeLock } from "./interruptions.ts";
 import {
   canStart,
   canTryAgain,
+  isBusyTrouble,
   isSettled,
   nextState,
   retryDelay,
@@ -21,7 +32,8 @@ import {
   type ItemEvent,
   type ItemState,
 } from "./itemState.ts";
-import type { Sender, Submission } from "./send.ts";
+import type { Sender, SignInTrouble, Submission } from "./send.ts";
+import { useStepHistory } from "./stepHistory.ts";
 import { StepFrame } from "./ui.tsx";
 
 /**
@@ -51,12 +63,22 @@ const AT_ONCE = 2;
 /** "someNotSent": the end, with at least one sent and at least one not. */
 type Step = "choose" | "describe" | "change" | "sending" | "someNotSent" | "done";
 
+/** Each step's browser history entry: Steps 1 to 3 have their own; from Send on, the first one's. */
+const HISTORY_INDEX: Record<Step, number> = { choose: 0, describe: 1, change: 2, sending: 0, someNotSent: 0, done: 0 };
+
+/** Who is signed in, and where to go if their membership lapses mid-send (#59). */
+export interface Account {
+  user: ShellUser;
+  renewUrl: string;
+  switchAccountUrl: string;
+}
+
 function counts(items: Chosen[]) {
   const videos = items.filter((i) => i.kind === "video").length;
   return { photos: items.length - videos, videos };
 }
 
-export function SendMedia({ sender }: { sender: Sender }) {
+export function SendMedia({ sender, account }: { sender: Sender; account?: Account }) {
   const [step, setStep] = useState<Step>("choose");
   const [chosen, setChosen] = useState<Chosen[]>([]);
   const [refused, setRefused] = useState<Refused[]>([]);
@@ -79,10 +101,30 @@ export function SendMedia({ sender }: { sender: Sender }) {
   const inFlight = useRef(new Set<string>());
   // The pause before each Item's next automatic try, by key.
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  // Interruptions (#59): no connection, and the member signed out or no
+  // longer a member. Either holds the page.
+  const [offline, setOffline] = useState(browserOffline);
+  const [signIn, setSignIn] = useState<SignInTrouble | null>(null);
+  const held = offline || signIn !== null;
+  // Send is pressed only once, even twice in a row before the page redraws.
+  const sendPressed = useRef(false);
+  const checkingSession = useRef(false);
+  const stepNow = useRef(step);
+  stepNow.current = step;
 
-  const go = (next: Step) => {
+  const show = (next: Step) => {
     setMoved(true);
     setStep(next);
+  };
+  const moveHistoryTo = useStepHistory((index) => {
+    // The member pressed Back: to Step 2 from Step 3 keeps every change, as the page's own Back does.
+    if (index === 1 && stepNow.current === "change") backToDescribe();
+    else if (index === 0) show("choose");
+    else show("describe");
+  });
+  const go = (next: Step) => {
+    moveHistoryTo(HISTORY_INDEX[next]);
+    show(next);
   };
 
   /** Moves one Item on; one taken out stays out. */
@@ -125,7 +167,7 @@ export function SendMedia({ sender }: { sender: Sender }) {
   // Step 2 answer edited after Back reaches every one that didn't change it.
   // A box the member typed back to the Step 2 answer is dropped here, so it
   // isn't pinned to the old answer without a Changed badge saying so.
-  const back = () => {
+  const backToDescribe = () => {
     setChanges((c) => {
       const kept: Record<string, Changes> = {};
       for (const [key, itemChanges] of Object.entries(c)) {
@@ -135,7 +177,11 @@ export function SendMedia({ sender }: { sender: Sender }) {
       return kept;
     });
     setStartFailed(false);
-    go("describe");
+    show("describe");
+  };
+  const back = () => {
+    moveHistoryTo(HISTORY_INDEX.describe);
+    backToDescribe();
   };
 
   const loadOptions = () => {
@@ -169,17 +215,29 @@ export function SendMedia({ sender }: { sender: Sender }) {
       .catch(() => ({ ok: false as const, reason: "failed" as const }))
       .then((result) => {
         inFlight.current.delete(item.key);
+        // The member is not signed in any more: hold everything until they are (#59).
+        if (!result.ok && (result.reason === "signed_out" || result.reason === "not_member")) setSignIn(result.reason);
         dispatch(item.key, { type: "result", result });
       });
   }
 
   // Two at a time: whenever one finishes, the next one that may start does,
-  // whether its turn has come or its next automatic try.
+  // whether its turn has come or its next automatic try. Nothing starts while
+  // the page is held; while the service is busy, only the busy one's own
+  // tries go, so the rest of the queue waits with it (#59).
+  const busy = chosen.some((i) => isBusyTrouble(states[i.key] ?? WAITING));
   useEffect(() => {
     if (step !== "sending") return;
-    for (const item of chosen) {
+    // The browser may know before any event says so (Send pressed with no connection).
+    if (!held && browserOffline()) {
+      setOffline(true);
+      return;
+    }
+    for (const item of held ? [] : chosen) {
       if (inFlight.current.size >= AT_ONCE) break;
-      if (canStart(states[item.key] ?? WAITING) && !inFlight.current.has(item.key)) start(item);
+      const state = states[item.key] ?? WAITING;
+      if (busy && state.status === "waiting") continue;
+      if (canStart(state) && !inFlight.current.has(item.key)) start(item);
     }
     // Nothing more is happening: the end. One that can't be added is listed there with its reason.
     const all = chosen.map((i) => states[i.key] ?? WAITING);
@@ -188,19 +246,20 @@ export function SendMedia({ sender }: { sender: Sender }) {
     if (sent === all.length) go("done");
     // With none sent, "most are in" would not be true: each stays with its Try again.
     else if (sent > 0) go("someNotSent");
-  }, [step, chosen, states]);
+  }, [step, chosen, states, held, busy]);
 
   // The pause before each automatic try (itemState.ts has the schedule).
+  // None while the page is held: it resumes them all at once when it can.
   useEffect(() => {
     for (const [key, timer] of timers.current) {
-      if (retryDelay(states[key] ?? WAITING) === undefined) {
+      if (held || retryDelay(states[key] ?? WAITING) === undefined) {
         clearTimeout(timer);
         timers.current.delete(key);
       }
     }
     for (const [key, state] of Object.entries(states)) {
       const delay = retryDelay(state);
-      if (delay === undefined || timers.current.has(key)) continue;
+      if (held || delay === undefined || timers.current.has(key)) continue;
       timers.current.set(
         key,
         setTimeout(() => {
@@ -209,7 +268,7 @@ export function SendMedia({ sender }: { sender: Sender }) {
         }, delay),
       );
     }
-  }, [states]);
+  }, [states, held]);
   useEffect(() => {
     const all = timers.current;
     return () => {
@@ -217,6 +276,56 @@ export function SendMedia({ sender }: { sender: Sender }) {
       all.clear();
     };
   }, []);
+
+  /** Every automatic try is due now: back online, in the foreground, or signed in again. Only while sending. */
+  const resumeAll = () => {
+    if (stepNow.current !== "sending") return;
+    setStates((all) => {
+      let changed = false;
+      const next: Record<string, ItemState> = {};
+      for (const [key, state] of Object.entries(all)) {
+        next[key] = nextState(state, { type: "resume" });
+        changed ||= next[key] !== state;
+      }
+      return changed ? next : all;
+    });
+  };
+
+  /** Asks the service again whether the member is signed in, when they come back to this tab. */
+  const checkSession = () => {
+    if (signIn === null || checkingSession.current) return;
+    checkingSession.current = true;
+    sender
+      .session()
+      .catch(() => "unknown" as const)
+      .then((result) => {
+        checkingSession.current = false;
+        if (result === "signed_in") {
+          setSignIn(null);
+          resumeAll();
+        } else if (result !== "unknown") setSignIn(result);
+      });
+  };
+
+  usePageEvents({
+    onOffline: () => setOffline(true),
+    onOnline: () => {
+      setOffline(false);
+      resumeAll();
+    },
+    onForeground: () => {
+      // Phones freeze a page in the background; the browser may also have missed going offline or online.
+      setOffline(browserOffline());
+      if (signIn !== null) checkSession();
+      else if (!browserOffline()) resumeAll();
+    },
+    onFocus: checkSession,
+  });
+
+  // Something is still on its way: keep the screen awake and ask before leaving.
+  const going = step === "sending" && chosen.some((i) => !isSettled(states[i.key] ?? WAITING));
+  useWakeLock(going);
+  useLeaveWarning(going);
 
   /** Try again for every one that was not sent and can be (the end screen). */
   const tryTheRestAgain = () => {
@@ -237,14 +346,21 @@ export function SendMedia({ sender }: { sender: Sender }) {
   }
 
   async function send() {
-    if (step !== "change" || starting) return;
+    if (step !== "change" || starting || sendPressed.current) return;
+    sendPressed.current = true;
     setStarting(true);
     setStartFailed(false);
     const items = itemChanges();
     const result = await sender
       .begin({ expectedItems: chosen.length, details, ...(Object.keys(items).length ? { items } : {}), rightsConfirmed: true })
       .catch(() => ({ ok: false as const, reason: "failed" as const }));
+    sendPressed.current = false;
     setStarting(false);
+    if (!result.ok && (result.reason === "signed_out" || result.reason === "not_member")) {
+      // Send again once signed in; nothing was sent.
+      setSignIn(result.reason);
+      return;
+    }
     if (result.ok) {
       submission.current = result.submission;
       setStates(Object.fromEntries(chosen.map((i) => [i.key, WAITING])));
@@ -308,125 +424,187 @@ export function SendMedia({ sender }: { sender: Sender }) {
     if (step === "change" && chosen.length === 0) go("choose");
   }, [step, chosen.length]);
 
-  switch (step) {
-    case "choose": {
-      const { photos, videos } = counts(chosen);
-      return (
-        <StepFrame step={0} focusHeading={moved}>
-          <p className="text-lg">{copy.choose.intro}</p>
-          <FilePickerButton
-            variant={chosen.length ? "secondary" : "primary"}
+  // What holds the page, said once above the step (#59): signed out or no
+  // longer a member first (only the member can fix it), then no connection,
+  // then a busy service, while sending.
+  const notice =
+    signIn !== null ? (
+      <SignInNotice trouble={signIn} account={account} />
+    ) : step === "sending" && offline ? (
+      <Notification variant="warning">{copy.problems.offline}</Notification>
+    ) : step === "sending" && busy ? (
+      <Notification variant="info">{copy.problems.busy}</Notification>
+    ) : null;
+
+  return (
+    <>
+      {notice}
+      {screenFor()}
+    </>
+  );
+
+  function screenFor() {
+    switch (step) {
+      case "choose": {
+        const { photos, videos } = counts(chosen);
+        return (
+          <StepFrame step={0} focusHeading={moved}>
+            <p className="text-lg">{copy.choose.intro}</p>
+            <FilePickerButton
+              variant={chosen.length ? "secondary" : "primary"}
            
-            className="w-full"
-            acceptedFileTypes={ACCEPTED}
-            allowsMultiple
-            onSelect={(files) => void pick(files)}
-          >
-            {chosen.length ? copy.choose.addMore : copy.choose.button}
-          </FilePickerButton>
-          <p className="text-base text-muted-foreground">{copy.choose.limits}</p>
-          {refused.length > 0 && (
-            <Notification variant="warning" title={copy.choose.couldNotAdd}>
-              <ul className="flex list-disc flex-col gap-1 pl-5 text-base">
-                {refused.map((r, i) => (
-                  <li key={i}>{copy.choose.refused(r.name, copy.choose.reason(r.refusal, r.kind, r.size))}</li>
-                ))}
-              </ul>
-            </Notification>
-          )}
-          {chosen.length > 0 && (
-            <>
-              <div className="flex flex-col gap-1">
-                <p className="text-lg font-medium">{copy.choose.chosen(photos, videos)}</p>
-                <p className="text-base text-muted-foreground">{copy.choose.howTo}</p>
-              </div>
-              <Gallery items={chosen} onRemove={remove} />
-              <Button variant="primary" className="w-full" onPress={() => go("describe")}>
-                {copy.choose.next}
-              </Button>
-            </>
-          )}
-        </StepFrame>
-      );
-    }
+              className="w-full"
+              acceptedFileTypes={ACCEPTED}
+              allowsMultiple
+              onSelect={(files) => void pick(files)}
+            >
+              {chosen.length ? copy.choose.addMore : copy.choose.button}
+            </FilePickerButton>
+            <p className="text-base text-muted-foreground">{copy.choose.limits}</p>
+            {refused.length > 0 && (
+              <Notification variant="warning" title={copy.choose.couldNotAdd}>
+                <ul className="flex list-disc flex-col gap-1 pl-5 text-base">
+                  {refused.map((r, i) => (
+                    <li key={i}>{copy.choose.refused(r.name, copy.choose.reason(r.refusal, r.kind, r.size))}</li>
+                  ))}
+                </ul>
+              </Notification>
+            )}
+            {chosen.length > 0 && (
+              <>
+                <div className="flex flex-col gap-1">
+                  <p className="text-lg font-medium">{copy.choose.chosen(photos, videos)}</p>
+                  <p className="text-base text-muted-foreground">{copy.choose.howTo}</p>
+                </div>
+                <Gallery items={chosen} onRemove={remove} />
+                <Button variant="primary" className="w-full" onPress={() => go("describe")}>
+                  {copy.choose.next}
+                </Button>
+              </>
+            )}
+          </StepFrame>
+        );
+      }
 
-    case "describe":
-      return (
-        <Describe
-          count={chosen.length}
-          details={details}
-          onChange={describe}
-          rights={rights}
-          onRights={setRights}
-          options={options}
-          onRetryOptions={loadOptions}
-          gone={gone}
-          onNext={() => {
-            setStartFailed(false);
-            go("change");
-          }}
-          focusHeading={moved}
-        />
-      );
+      case "describe":
+        return (
+          <Describe
+            count={chosen.length}
+            details={details}
+            onChange={describe}
+            rights={rights}
+            onRights={setRights}
+            options={options}
+            onRetryOptions={loadOptions}
+            gone={gone}
+            onNext={() => {
+              setStartFailed(false);
+              go("change");
+            }}
+            focusHeading={moved}
+          />
+        );
 
-    case "change":
-      // Next on Step 2 needs the lists, so they are here.
-      if (options.status !== "ready") return null;
-      return (
-        <Change
-          items={chosen}
-          details={details}
-          changes={changes}
-          onChange={change}
-          onRemove={remove}
-          live={options.options}
-          gone={goneFor}
-          startFailed={startFailed}
-          busy={starting}
-          onSend={() => void send()}
-          onBack={back}
-          focusHeading={moved}
-        />
-      );
+      case "change":
+        // Next on Step 2 needs the lists, so they are here.
+        if (options.status !== "ready") return null;
+        return (
+          <Change
+            items={chosen}
+            details={details}
+            changes={changes}
+            onChange={change}
+            onRemove={remove}
+            live={options.options}
+            gone={goneFor}
+            startFailed={startFailed}
+            busy={starting}
+            onSend={() => void send()}
+            onBack={back}
+            focusHeading={moved}
+          />
+        );
 
-    case "sending": {
-      const sent = chosen.filter((i) => states[i.key]?.status === "sent").length;
-      return (
-        <StepFrame step={3} focusHeading={moved}>
-          <p className="text-lg">{copy.sending.keepOpen}</p>
-          <p className="text-lg font-medium">{copy.sending.progress(sent, chosen.length)}</p>
-          <ul className="flex flex-col gap-4">
-            {chosen.map((item) => (
-              <ItemRow
-                key={item.key}
-                item={item}
-                state={states[item.key] ?? WAITING}
-                onTryAgain={() => dispatch(item.key, { type: "tryAgain" })}
-                onRemove={() => remove(item.key)}
-              />
-            ))}
-          </ul>
-        </StepFrame>
-      );
-    }
+      case "sending": {
+        const sent = chosen.filter((i) => states[i.key]?.status === "sent").length;
+        return (
+          <StepFrame step={3} focusHeading={moved}>
+            <p className="text-lg">{copy.sending.keepOpen}</p>
+            <p className="text-lg font-medium">{copy.sending.progress(sent, chosen.length)}</p>
+            <ul className="flex flex-col gap-4">
+              {chosen.map((item) => (
+                <ItemRow
+                  key={item.key}
+                  item={item}
+                  state={states[item.key] ?? WAITING}
+                  onTryAgain={() => dispatch(item.key, { type: "tryAgain" })}
+                  onRemove={() => remove(item.key)}
+                />
+              ))}
+            </ul>
+          </StepFrame>
+        );
+      }
 
-    case "someNotSent":
-      return (
-        <SomeNotSent
-          items={chosen.filter((i) => states[i.key]?.status !== "sent")}
-          states={states}
-          total={chosen.length}
-          onTryAgain={tryTheRestAgain}
-          onLater={() => go("done")}
-        />
-      );
+      case "someNotSent":
+        return (
+          <SomeNotSent
+            items={chosen.filter((i) => states[i.key]?.status !== "sent")}
+            states={states}
+            total={chosen.length}
+            onTryAgain={tryTheRestAgain}
+            onLater={() => go("done")}
+          />
+        );
 
-    case "done": {
-      // Only what was sent: after "I'll do the rest later", not everything was.
-      const sent = chosen.filter((i) => states[i.key]?.status === "sent");
-      return <Done {...counts(sent)} allSent={sent.length === chosen.length} onMore={startOver} />;
+      case "done": {
+        // Only what was sent: after "I'll do the rest later", not everything was.
+        const sent = chosen.filter((i) => states[i.key]?.status === "sent");
+        return <Done {...counts(sent)} allSent={sent.length === chosen.length} onMore={startOver} />;
+      }
     }
   }
+}
+
+/**
+ * Signed out, or no longer a member, part way through (#30, #31). Signing in
+ * again opens in a new tab, so the chosen photos stay in this one; the page
+ * carries on when the member comes back to it.
+ */
+function SignInNotice({ trouble, account }: { trouble: SignInTrouble; account?: Account }) {
+  if (trouble === "signed_out") {
+    return (
+      <Notification
+        variant="warning"
+        actions={
+          <Link variant="primary" className="w-full" href={SIGNED_IN_PATH} target="_blank" rel="noopener">
+            {copy.problems.signInAgain}
+          </Link>
+        }
+      >
+        <p className="text-lg">{copy.problems.signedOut}</p>
+      </Notification>
+    );
+  }
+  return (
+    <Notification variant="warning" title={copy.notMember.title}>
+      <div className="flex flex-col gap-3">
+        {account && <p className="text-lg">{copy.notMember.signedInAs(account.user.name)}</p>}
+        <p className="text-lg">{copy.notMember.explain}</p>
+        <p className="text-lg">{copy.problems.notMemberStillHere}</p>
+        {account && (
+          <>
+            <Link variant="primary" className="w-full" href={account.renewUrl} target="_blank" rel="noopener">
+              {copy.notMember.renew}
+            </Link>
+            <Link variant="secondary" className="w-full" href={account.switchAccountUrl} target="_blank" rel="noopener">
+              {copy.notMember.switchAccount}
+            </Link>
+          </>
+        )}
+      </div>
+    </Notification>
+  );
 }
 
 /** What one Item's state says. */
@@ -441,7 +619,8 @@ function labelOf(item: Chosen, state: ItemState): string {
     case "sent":
       return copy.sending.sent;
     case "connection":
-      return copy.sending.connection;
+      // A busy service is said once for the page (#59); each one waits its turn again.
+      return state.busy ? copy.sending.waiting : copy.sending.connection;
     case "stalled":
       return copy.sending.waitingForConnection;
     case "failed":

@@ -177,9 +177,9 @@ export const copy = {
     cannotAdd: (reason: string) => `Can't be added: ${reason}`,
     remove: "Remove",
     // Not on #31 as an Item line (#60): the service is full or not answering,
-    // or the member has as much going as they may. #31's "We're busy right
-    // now. We'll keep trying for a few minutes." needs the automatic retries
-    // (#59); until then the member tries again. Approved in the #60 review.
+    // or the member has as much going as they may. Since #59 the page keeps
+    // trying by itself first (with problems.busy); this is the Item's line
+    // once those tries run out, with Try again. Approved in the #60 review.
     busy: "We're busy right now. Please try again in a few minutes.",
   },
 
@@ -201,6 +201,21 @@ export const copy = {
       `${notSent} of ${total} didn't make it. Try those again now, or come back later and choose them again.`,
     tryAgain: "Try again",
     later: "I'll do the rest later",
+  },
+
+  // #31's PROBLEMS lines (#59): what holds the page part way through.
+  problems: {
+    signedOut: "You've been signed out. Sign in again to keep going. We'll open it in a new tab so your photos stay here.",
+    signInAgain: "Sign in again",
+    // The new tab, once signed in again.
+    signedInTab: "You're signed in. You can close this tab.",
+    busy: "We're busy right now. We'll keep trying for a few minutes.",
+    offline: "No internet connection. Your photos will keep going when it comes back.",
+    // Not on #31 (#59): under the not-a-member wording when the membership
+    // lapses part way through, so the member knows the chosen ones wait.
+    // Needs a read-through.
+    notMemberStillHere:
+      "Your photos and videos are still here. Once you're signed in with a current membership, come back to this page and they'll keep going.",
   },
 
   notMember: {
