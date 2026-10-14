@@ -1,9 +1,11 @@
-// The audit trail: one structured JSON line per upload event, written to
+// The audit trail: one structured JSON line per upload event (and per
+// reviewer email, #61), written to
 // stdout so it lands in the container log. Only the fields listed here are
 // ever written, so file contents, cookies and keys cannot leak into it.
 
 export interface AuditEvent {
-  event: "upload_request";
+  /** A request to the API, or the Reviewers' email for a Submission (sent, or given up on). */
+  event: "upload_request" | "reviewer_email";
   outcome: string;
   method?: string;
   path?: string;

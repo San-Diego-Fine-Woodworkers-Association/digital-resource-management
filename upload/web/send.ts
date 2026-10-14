@@ -66,6 +66,12 @@ export interface Submission {
    * at once.
    */
   send(file: File, events: SendEvents, item: string): Promise<SendResult>;
+  /**
+   * The page reached its end with at least one sent: the service sends the
+   * Reviewers' email now, as partial if some are missing (#61). Fire and
+   * forget: never waited for, never shown.
+   */
+  finished?(): void;
 }
 
 export interface Sender {
@@ -235,6 +241,7 @@ function createSubmission(submissionId: string): Submission {
   }
 
   return {
+    finished: () => reportFinished(submissionId),
     async send(file, events, item) {
       const uploaded = await upload(file, events.onProgress);
       if ("stopped" in uploaded) return { ok: false, reason: uploaded.stopped };
@@ -247,6 +254,25 @@ function createSubmission(submissionId: string): Submission {
       return handOver({ uploadId: uploaded.uploadId, item });
     },
   };
+}
+
+/**
+ * Tells the service the page is done with this Submission (#61). Best-effort:
+ * any answer, or none, is ignored; `keepalive` lets it go even as the tab
+ * closes.
+ */
+export function reportFinished(submissionId: string): void {
+  try {
+    fetch(`${SUBMISSIONS_ENDPOINT}/${encodeURIComponent(submissionId)}/finished`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+      keepalive: true,
+    }).catch(() => {});
+  } catch {
+    // never the member's problem
+  }
 }
 
 /**

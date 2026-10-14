@@ -60,5 +60,13 @@ HOST_SSH=root@5.78.204.140 scripts/host-setup.sh mail-test media-reviewers@sdfwa
 The script prints the SMTP conversation. Confirm that every Group member gets
 the message and that it is not in spam.
 
+The upload service sends the Reviewers' email (#61) with these Dokploy
+environment variables; the defaults are the values above, so none needs
+setting: `SMTP_HOST`, `SMTP_PORT`, `SMTP_EHLO_NAME`, `REVIEWER_EMAIL_FROM`,
+`REVIEWER_EMAIL_TO`, `REVIEWER_EMAIL_STALL_MINUTES` (30), and the kill
+switch `REVIEWER_EMAIL_PAUSED` (anything but false/0/no/off sends nothing).
+Each attempt, and each send given up on, is in the container log: look for
+`"event":"reviewer_email"` and `could not send the reviewer email`.
+
 Trade-off: the relay trusts the server's IP, so any container on this host can
 send as an `@sdfwa.org` address. Accepted in ADR 0006.

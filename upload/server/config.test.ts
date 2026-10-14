@@ -92,4 +92,25 @@ describe("loadConfig", () => {
   ])("refuses a bad %s", (key, value) => {
     expect(() => loadConfig({ [key]: value })).toThrow(key);
   });
+
+  it("sends the Reviewers' email through the Workspace relay by default (#61)", () => {
+    expect(loadConfig({}).reviewerEmail).toEqual({
+      paused: false,
+      smtpHost: "smtp-relay.gmail.com",
+      smtpPort: 587,
+      ehloName: "media.sdfwa.org",
+      from: "no-reply@sdfwa.org",
+      to: "media-reviewers@sdfwa.org",
+      stallMs: 30 * 60_000,
+    });
+    expect(loadConfig({ REVIEWER_EMAIL_PAUSED: "yes" }).reviewerEmail.paused).toBe(true);
+    expect(loadConfig({ REVIEWER_EMAIL_STALL_MINUTES: "5" }).reviewerEmail.stallMs).toBe(5 * 60_000);
+  });
+
+  it("refuses an address or host that could smuggle in a header or a second recipient", () => {
+    expect(() => loadConfig({ REVIEWER_EMAIL_TO: "a@sdfwa.org, b@evil.example" })).toThrow("REVIEWER_EMAIL_TO");
+    expect(() => loadConfig({ REVIEWER_EMAIL_FROM: "x@sdfwa.org\r\nBcc: y@z.org" })).toThrow("REVIEWER_EMAIL_FROM");
+    expect(() => loadConfig({ SMTP_HOST: "relay.example.org:25" })).toThrow("SMTP_HOST");
+    expect(() => loadConfig({ REVIEWER_EMAIL_STALL_MINUTES: "0" })).toThrow("REVIEWER_EMAIL_STALL_MINUTES");
+  });
 });

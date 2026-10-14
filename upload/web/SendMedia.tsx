@@ -185,6 +185,8 @@ export function SendMedia({ sender }: { sender: Sender }) {
     const all = chosen.map((i) => states[i.key] ?? WAITING);
     if (all.length === 0 || !all.every(isSettled)) return;
     const sent = all.filter((s) => s.status === "sent").length;
+    // The Reviewers' email goes now (#61), partial if some are not in.
+    if (sent > 0) submission.current?.finished?.();
     if (sent === all.length) go("done");
     // With none sent, "most are in" would not be true: each stays with its Try again.
     else if (sent > 0) go("someNotSent");
