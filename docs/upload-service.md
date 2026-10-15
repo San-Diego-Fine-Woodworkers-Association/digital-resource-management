@@ -63,8 +63,9 @@ the services whose definition or image changed; see the
 [README](../README.md#deployments). Settings live in Dokploy's
 **Environment** tab for the stack. The service reads them once at startup, so a
 changed value takes effect only when the `upload` container is recreated
-(redeploy the stack from Dokploy). _To confirm on prod: whether saving the
-Environment tab redeploys by itself or needs **Deploy** pressed._
+(redeploy the stack from Dokploy). Saving environment variables doesn't
+restart anything by itself: press **Deploy** (redeploy) to apply them. _To
+confirm in the Dokploy UI._
 
 A redeploy that recreates the `upload` container:
 
@@ -92,11 +93,11 @@ A redeploy that recreates the `upload` container:
 
 ## Getting onto the server
 
-There is one production host. Its address is in
-[host-setup.md](host-setup.md). The examples here set it once:
+There is one production host. Its public IPv4 and IPv6 are in the Hetzner
+Cloud console, under the project's server. The examples here set it once:
 
 ```sh
-HOST=root@5.78.204.140
+HOST=root@<server IP>
 ```
 
 Scripts in this repo take the host the same way: `HOST_SSH=$HOST
@@ -109,9 +110,9 @@ service label, the way `scripts/rs-setup.sh` finds ResourceSpace:
 ssh $HOST 'docker ps -a --filter label=com.docker.compose.service=upload --format "{{.Names}}\t{{.Status}}"'
 ```
 
-That should list exactly one container. _To confirm on prod: that no other
-Dokploy stack on the host has a service called `upload`. If one does, use the
-container name, `<stack>-upload-1`, instead of the label filter below._
+That lists exactly one container, `<stack>-upload-1` (checked 2026-10-15).
+Each service label in the stack (`upload`, `resourcespace`, `mariadb`,
+`backup`, `clip`, `faces`, `adminer`) is unique on the host.
 
 The container's log (both the audit trail and the operational messages):
 
@@ -224,10 +225,12 @@ While on, nothing is scheduled or sent. Uploads carry on as normal. Submissions
 started while it is on never get an email, even after it is turned off; their
 Items are still in Pending Review. Emails already scheduled when you turn it on
 are not sent while it is on. When it is turned off again, those still pending
-on staging are read back at startup and sent. But while it is on, the sweep
-no longer knows they are pending, so one whose state file has not changed for
-24 hours is removed and never sent. Keep the pause short, or tell the
-Reviewers to check Pending Review.
+on staging are read back at startup and sent.
+
+> **Until #84 is deployed:** while the switch is on, the sweep doesn't know
+> those emails are pending, so one whose state file hasn't changed for 24
+> hours is removed and never sent. Keep the pause short, or tell the Reviewers
+> to check Pending Review.
 
 ## Limits and quotas
 
@@ -295,7 +298,7 @@ Untrusted files land here before ResourceSpace sees them
 Hetzner Volume, so if it fills, only uploads stop; the database, filestore,
 backups and root disk are untouched.
 
-| | Production (#35) |
+| | Production (#35, checked 2026-10-15) |
 |---|---|
 | Host path | `/mnt/upload-staging` (`UPLOAD_STAGING_PATH`) |
 | In the container | `/staging` |
@@ -306,8 +309,9 @@ backups and root disk are untouched.
 **It is `nofail`: after a reboot, check it is mounted** (`HOST_SSH=$HOST
 scripts/host-setup.sh check`, section "Staging mount"). If it is not, the
 service would see the empty, root-owned directory on the root disk underneath;
-it cannot write there, so health reports `"writable": false`. _To confirm on
-prod: the ownership of `/mnt/upload-staging` when the volume is not mounted._
+it cannot write there (it runs as 10001), so health should report
+`"writable": false`. (Reasoned from the fstab and the ownership, not observed:
+checking it would need an unmount.)
 
 ### The cap
 
@@ -515,8 +519,9 @@ what `scripts/rs-setup/provision.php` declares. See
 [resourcespace-setup.md](resourcespace-setup.md).
 
 **2. Membership of the `media-reviewers@sdfwa.org` Google Group**, so they get
-the email. In Google Workspace (admin.google.com > Directory > Groups, or
-groups.google.com), open `media-reviewers@sdfwa.org` > Members > Add members.
+the email. You can manage the Group in either place: admin.google.com
+(Directory > Groups) or groups.google.com. Open `media-reviewers@sdfwa.org` >
+Members > Add members.
 Leave the Group's posting setting alone: it must keep allowing
 `no-reply@sdfwa.org` to post.
 
@@ -555,8 +560,19 @@ Upgrading ResourceSpace itself (the SVN revision) is in the
 tools: it checks a file's type from its first bytes. Its runtime dependencies
 are `@tus/server`, `@tus/file-store` and `nodemailer`. Keep them current with
 `npm update` / `npm audit` in `upload/` on the same monthly cadence; the merge
-rebuilds the image. _To confirm on prod: whether Dokploy's build pulls a fresh
-`node:24-alpine` base each time or reuses a cached one._
+rebuilds the image.
+
+**Base images are not refreshed by a deploy.** Builds on the host reuse
+BuildKit's cache, so `node:24-alpine` (upload) and `ubuntu:24.04`
+(ResourceSpace) are served from the cache, not pulled fresh (checked
+2026-10-15). To pick up a newer base, pull it on the host and then redeploy:
+
+```sh
+ssh $HOST 'docker pull node:24-alpine && docker pull ubuntu:24.04'
+```
+
+Or use a no-cache rebuild in Dokploy, if the UI offers one. Do this as part of
+the monthly patch, and when a base-image vulnerability is published.
 
 ## Monitoring
 

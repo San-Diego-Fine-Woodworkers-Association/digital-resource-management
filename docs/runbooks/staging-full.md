@@ -5,7 +5,7 @@ The upload service stops taking chunks when the staging volume reaches its cap
 [the staging volume](../upload-service.md#the-staging-volume).
 
 ```sh
-HOST=root@5.78.204.140   # the production host, see docs/host-setup.md
+HOST=root@<server IP>   # the server's public IPv4 or IPv6: Hetzner Cloud console, under the project's server
 ```
 
 ## Symptoms

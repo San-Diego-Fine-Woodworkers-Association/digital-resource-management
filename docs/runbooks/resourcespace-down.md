@@ -5,7 +5,7 @@ not answer, the service takes no new Submissions or uploads; what is already on
 staging waits there.
 
 ```sh
-HOST=root@5.78.204.140   # the production host, see docs/host-setup.md
+HOST=root@<server IP>   # the server's public IPv4 or IPv6: Hetzner Cloud console, under the project's server
 ```
 
 ## Symptoms
@@ -62,8 +62,8 @@ HOST_SSH=$HOST scripts/host-setup.sh check
 ```
 
 Look for the data volume in "Block devices" and "fstab". Its mount point is
-`DATA_VOLUME_PATH` in Dokploy (compose default `/mnt/HC_Volume_105523521`).
-_To confirm on prod: the current `DATA_VOLUME_PATH`._
+`DATA_VOLUME_PATH` in Dokploy: `/mnt/HC_Volume_105523521` on production
+(checked 2026-10-15), holding `filestore/`, `mariadb/` and `backups/`.
 
 ```sh
 ssh $HOST 'findmnt /mnt/HC_Volume_105523521; df -h /mnt/HC_Volume_105523521'

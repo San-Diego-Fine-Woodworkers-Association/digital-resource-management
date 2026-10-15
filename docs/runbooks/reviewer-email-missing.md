@@ -9,7 +9,7 @@ whatever happens to the email. Tell the Reviewers to check Pending Review in
 ResourceSpace while you look.
 
 ```sh
-HOST=root@5.78.204.140   # the production host, see docs/host-setup.md
+HOST=root@<server IP>   # the server's public IPv4 or IPv6: Hetzner Cloud console, under the project's server
 ```
 
 ## Symptoms
@@ -45,7 +45,7 @@ Leave out the last `grep` to see every email. What you may find:
 | `could not send the reviewer email` without a `failed` yet | Still retrying (after 30 s, 2 min and 10 min). | wait, then recheck |
 | `no reviewer email: nothing in the Submission arrived` | Nothing reached ResourceSpace, so there was nothing to review. | the member's uploads: [ResourceSpace is down](resourcespace-down.md) |
 | `could not schedule the reviewer email` or `could not save the reviewer email's state` | Something went wrong writing to staging. | [Staging is full](staging-full.md) |
-| Nothing at all for that Submission | The kill switch was on when it started, or the container was recreated since (its log went with it). | step 2; [Logs](../upload-service.md#logs-and-the-audit-trail) |
+| Nothing at all for that Submission | The kill switch was on when it started, or the container was recreated since (its log went with it). Until #84 is deployed, also: the kill switch was on for more than a day, and the sweep removed the pending email. | step 2; [Logs](../upload-service.md#logs-and-the-audit-trail) |
 
 **4. Can the server reach the relay?**
 
@@ -54,9 +54,10 @@ HOST_SSH=$HOST scripts/host-setup.sh check
 ```
 
 Check "Outbound SMTP" shows `smtp-relay.gmail.com:587 open`, and note the
-public IPv4 and IPv6 it prints. Both must be allowed on the relay; the server
-connects over IPv6. The allowed addresses on 2026-10-11 were `5.78.204.140/32`
-and `2a01:4ff:1f0:9c7e::1/128` (#35).
+public IPv4 and IPv6 it prints (the same as the Hetzner Cloud console shows for
+the server). Both must be allowed on the relay, because the server connects
+over IPv6. Compare them with the relay's allowed IPs in the Google Workspace
+admin console.
 
 **5. Does a test message get through?**
 
