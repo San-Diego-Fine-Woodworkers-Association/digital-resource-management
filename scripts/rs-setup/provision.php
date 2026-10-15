@@ -22,8 +22,9 @@ include_once "/var/www/html/include/plugin_functions.php";
 
 // Stock fields SDFWA does not use (#88). Deactivated, not deleted, so they and any values
 // stay in the database and can be switched back on in Admin > System > Manage metadata fields.
-// `text` is Extracted text and `accessibilityextend` is Accessibility - Extended Description.
-const UNUSED_FIELDS = ["recognised", "extract", "keywords", "country", "text", "accessibilityextend"];
+// `text` is Extracted text, `accessibilityextend` is Accessibility - Extended Description,
+// `subject` and `event` are Keywords - Subject and Keywords - Event.
+const UNUSED_FIELDS = ["recognised", "extract", "keywords", "country", "text", "accessibilityextend", "subject", "event"];
 
 // Stock ResourceSpace fields the upload proxy writes. They ship with every install.
 const STOCK_FIELDS = ["title", "date", "caption"];
