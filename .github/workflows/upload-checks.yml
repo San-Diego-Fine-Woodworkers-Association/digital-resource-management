@@ -1,8 +1,9 @@
 name: Upload service checks
 
-# Typecheck, test and build the image for the Member Media Upload service
-# (upload/). Any failing step fails the check. Runs on every pull request, so
-# it can be required on main (issue #52), and on pushes to main.
+# Typecheck, test, check accessibility in a real browser (#62), and build the
+# image for the Member Media Upload service (upload/). Any failing step fails
+# the check. Runs on every pull request, so it can be required on main (issue
+# #52), and on pushes to main.
 on:
   pull_request:
   push:
@@ -39,6 +40,46 @@ jobs:
 
       - name: Test
         run: npm test
+
+  accessibility:
+    name: Accessibility checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: upload
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: upload/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+
+      # The browser is Playwright's Chromium for the pinned @playwright/test,
+      # kept between runs; its system libraries are installed every time.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('upload/package-lock.json') }}
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # axe over every screen and state, and the rest of #31's target, on the
+      # built page with the service faked (upload/a11y, docs/accessibility.md).
+      - name: Accessibility checks
+        run: npm run test:a11y
+
+      - name: Keep what failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accessibility-test-results
+          path: upload/test-results
+          retention-days: 7
 
   image:
     name: Build image

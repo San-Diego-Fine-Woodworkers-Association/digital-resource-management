@@ -88,6 +88,9 @@ export const copy = {
     gallery: "Your photos and videos",
     scrollHint: (count: number) => `Scroll to see all ${count}.`,
     video: "Video",
+    // Not on #31 (#62): a photo the browser can't draw, in a square too small
+    // for noPreview, as "Video" is for a video. Needs a read-through.
+    photo: "Photo",
     seeBigger: (name: string) => `See ${name} bigger`,
     takeOut: (name: string) => `Take ${name} out`,
     bigger: (name: string) => `${name}, bigger`,

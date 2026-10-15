@@ -433,9 +433,13 @@ export function SendMedia({ sender, account }: { sender: Sender; account?: Accou
     signIn !== null ? (
       <SignInNotice trouble={signIn} account={account} />
     ) : step === "sending" && offline ? (
-      <Notification variant="warning">{copy.problems.offline}</Notification>
+      <Notification variant="warning">
+        <p className="text-lg text-foreground">{copy.problems.offline}</p>
+      </Notification>
     ) : step === "sending" && busy ? (
-      <Notification variant="info">{copy.problems.busy}</Notification>
+      <Notification variant="info">
+        <p className="text-lg text-foreground">{copy.problems.busy}</p>
+      </Notification>
     ) : null;
 
   return (
@@ -465,7 +469,8 @@ export function SendMedia({ sender, account }: { sender: Sender; account?: Accou
             <p className="text-base text-muted-foreground">{copy.choose.limits}</p>
             {refused.length > 0 && (
               <Notification variant="warning" title={copy.choose.couldNotAdd}>
-                <ul className="flex list-disc flex-col gap-1 pl-5 text-base">
+                {/* A camera's file name has no spaces: let it break anywhere rather than run off the screen (#62). */}
+                <ul className="flex list-disc flex-col gap-1 pl-5 text-base text-foreground [overflow-wrap:anywhere]">
                   {refused.map((r, i) => (
                     <li key={i}>{copy.choose.refused(r.name, copy.choose.reason(r.refusal, r.kind, r.size))}</li>
                   ))}
@@ -584,13 +589,14 @@ function SignInNotice({ trouble, account }: { trouble: SignInTrouble; account?: 
           </Link>
         }
       >
-        <p className="text-lg">{copy.problems.signedOut}</p>
+        <p className="text-lg text-foreground">{copy.problems.signedOut}</p>
       </Notification>
     );
   }
   return (
     <Notification variant="warning" title={copy.notMember.title}>
-      <div className="flex flex-col gap-3">
+      {/* The design system's Notification greys its text; full strength here, as on the rest of the page (#62). */}
+      <div className="flex flex-col gap-3 text-foreground">
         {account && <p className="text-lg">{copy.notMember.signedInAs(account.user.name)}</p>}
         <p className="text-lg">{copy.notMember.explain}</p>
         <p className="text-lg">{copy.problems.notMemberStillHere}</p>
@@ -707,11 +713,13 @@ function SomeNotSent({
         {items.map((item) => {
           const state = states[item.key] ?? WAITING;
           return (
-            <li key={item.key} className="flex items-center gap-3">
+            // With big text, the words go under the picture rather than off the screen (#62).
+            <li key={item.key} className="flex flex-wrap items-center gap-3">
               <Thumb item={item} className="size-16 shrink-0 overflow-hidden rounded" />
-              <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <div className="flex min-w-[8rem] flex-1 flex-col gap-1">
                 <p className="truncate text-base">{item.file.name}</p>
-                <p className={`text-base font-medium ${isProblem(state) ? "text-destructive" : ""}`}>{labelOf(item, state)}</p>
+                {/* Not red here: on this screen's tint it is too faint (#62), and every one listed is a problem. */}
+                <p className="text-base font-medium">{labelOf(item, state)}</p>
               </div>
             </li>
           );

@@ -150,7 +150,7 @@ describe("choosing many photos and videos", () => {
     expect(screen.queryByRole("button", { name: "Next" })).not.toBeInTheDocument();
   });
 
-  it("shows all 14 of 14 chosen in a 3-column gallery that scrolls after 4 rows", async () => {
+  it("shows all 14 of 14 chosen in a 3-column gallery that scrolls after 4 rows (2 columns of 6 on a narrow phone)", async () => {
     const user = userEvent.setup();
     render(<App boot={boot} sender={fakeSender().sender} />);
     const files = [
@@ -169,7 +169,13 @@ describe("choosing many photos and videos", () => {
     expect(tiles()).toHaveLength(14);
     expect(screen.getAllByRole("button", { name: /^Take .* out$/ })).toHaveLength(14);
     // The layout itself is checked in a browser (see the PR's screenshots).
-    expect(gallery).toHaveClass("grid-cols-3", "overflow-y-auto", "max-h-[calc((100cqw-1rem)/3*4+1.5rem)]");
+    expect(gallery).toHaveClass(
+      "@min-[340px]:grid-cols-3",
+      "overflow-y-auto",
+      "@min-[340px]:max-h-[calc((100cqw-1rem)/3*4+1.5rem)]",
+      "grid-cols-2",
+      "max-h-[calc((100cqw-0.5rem)/2*6+2.5rem)]",
+    );
     expect(screen.getByText("Scroll to see all 14.")).toBeInTheDocument();
     expect(screen.getAllByText("Video")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "Add more" })).toBeInTheDocument();
