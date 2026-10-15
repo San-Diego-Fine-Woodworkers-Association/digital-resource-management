@@ -12,6 +12,8 @@
 // - The stock Credit field is only retitled (Photographer credit) and Creator is
 //   created if missing (#87); nothing else about either is touched.
 // - The stock fields in UNUSED_FIELDS are deactivated (#88); nothing else about them is touched.
+// - Which tab each active field sits on, and the order of the fields, is owned by
+//   FIELD_TABS (#90); fields and tabs are looked up by shortname / name.
 // - Submitter fields, the two groups, the upload-service user and the dash tile
 //   are owned by this script: their settings are reset to what is declared here.
 
@@ -63,6 +65,20 @@ const SUBMITTER_FIELDS = [
     "submissionid" => ["title" => "Submission ID", "type" => FIELD_TYPE_TEXT_BOX_SINGLE_LINE, "indexed" => true],
     "submitterrights" => ["title" => "Submitter Rights Confirmation", "type" => FIELD_TYPE_TEXT_BOX_MULTI_LINE, "indexed" => false],
     "submitterfilename" => ["title" => "Submitter Original Filename", "type" => FIELD_TYPE_TEXT_BOX_SINGLE_LINE, "indexed" => false],
+];
+
+// Metadata tabs (#90), in display order, and the fields on each in display order. Event
+// comes first because it holds the required Program / Event and Subject Type. A field that
+// does not exist on a host (e.g. Piece Category on a fresh install) is skipped.
+const FIELD_TABS = [
+    "Event" => ["programevent", "eventname", "subjecttype", "location", "date"],
+    "Content" => ["title", "caption", "person", "piececategory", "woodspecies", "accessibilityalttext"],
+    "Credit" => ["credit", "creator"],
+    "Submission" => ["submittername", "submitteremail", "submittermemberid", "submissionid", "submitterrights", "submitterfilename"],
+    "Technical" => [
+        "camera", "source", "notes", "originalfilename",
+        "framerate", "videobitrate", "aspectratio", "videosize", "duration", "channelmode", "samplerate", "audiobitrate",
+    ],
 ];
 
 const UPLOADER_GROUP = "Member Upload Service";
@@ -184,6 +200,36 @@ foreach (UNUSED_FIELDS as $short) {
     }
     ps_query("UPDATE resource_type_field SET active = 0 WHERE ref = ?", ["i", $ref]);
     echo "deactivated field       $ref $short\n";
+}
+clear_query_cache("schema");
+
+// ---------- metadata tabs ----------
+// Written with SQL because create_tab() needs a logged-in user with tab permission. The
+// stock "Default" tab (ref 1) is left alone and sorts first, but is empty once every
+// active field is placed (ResourceSpace hides empty tabs).
+$tabOrder = 20;
+$fieldOrder = 10;
+foreach (FIELD_TABS as $tabName => $shortnames) {
+    $tab = (int) ps_value("SELECT ref value FROM tab WHERE name = ? ORDER BY ref LIMIT 1", ["s", $tabName], 0);
+    if ($tab) {
+        ps_query("UPDATE tab SET order_by = ? WHERE ref = ?", ["i", $tabOrder, "i", $tab]);
+        echo "exists  tab            $tab $tabName\n";
+    } else {
+        ps_query("INSERT INTO tab (name, order_by) VALUES (?, ?)", ["s", $tabName, "i", $tabOrder]);
+        $tab = (int) sql_insert_id();
+        echo "created tab            $tab $tabName\n";
+    }
+    $tabOrder += 10;
+    foreach ($shortnames as $short) {
+        $ref = field_ref($short);
+        if (!$ref) {
+            echo "skipped tab field       '$short' not found\n";
+            continue;
+        }
+        ps_query("UPDATE resource_type_field SET tab = ?, order_by = ? WHERE ref = ?", ["i", $tab, "i", $fieldOrder, "i", $ref]);
+        $fieldOrder += 10;
+    }
+    echo "tab fields             $tabName: " . implode(", ", $shortnames) . "\n";
 }
 clear_query_cache("schema");
 
