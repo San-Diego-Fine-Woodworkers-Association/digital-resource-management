@@ -531,17 +531,20 @@ export function createService(config: Config, options: ServiceOptions = {}): Ser
    * The page reached "Most of your photos are in" (#58), or the thank-you:
    * the Reviewers' email goes now, as partial if some are not in (#61). Only
    * the member who started the Submission may say so. Best-effort on the
-   * page's side: it never waits for or shows the answer. JSON only (the body
-   * is ignored), so other sites cannot send it.
+   * page's side: it never waits for or shows the answer. JSON only, so other
+   * sites cannot send it. The body may say how many Items the member kept
+   * (`keptItems`); the notifier checks it, and ignores one that doesn't fit.
    */
   async function finishedSubmission(req: http.IncomingMessage, submissionId: string, user: SessionUser, answer: Answer) {
+    let body: unknown;
     try {
-      await readJson(req);
+      body = await readJson(req);
     } catch (err) {
       const status = err instanceof BodyError ? err.status : 400;
       return answer(status, { error: "invalid" }, "invalid", user);
     }
-    if ((await notifier.finished(submissionId, user.id)) === "not_found") {
+    const keptItems = typeof body === "object" && body !== null ? (body as { keptItems?: unknown }).keptItems : undefined;
+    if ((await notifier.finished(submissionId, user.id, keptItems)) === "not_found") {
       return answer(404, { error: "not_found" }, "not_found", user);
     }
     return answer(202, { status: "noted" }, "finished", user, {}, { submissionId });

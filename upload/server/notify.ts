@@ -6,7 +6,10 @@
 //   - complete, at once, when every Item the page said it would send is in
 //     ResourceSpace;
 //   - partial ("9 of 14 sent"), at once, when the page says it finished with
-//     some not sent (POST /submissions/<id>/finished);
+//     some not sent (POST /submissions/<id>/finished). The page also says
+//     how many Items the member kept: one removed while sending is no longer
+//     expected, so the rest all in is complete. One refused as "Can't be
+//     added" is still kept, and so still counts as not sent;
 //   - partial, when nothing has arrived for the stall time (30 minutes). The
 //     deadline slides forward with every chunk, hand-off and Item, so a slow
 //     but healthy upload never trips it. If none at all arrived, there is
@@ -66,6 +69,12 @@ export interface NotifyState {
   status: "pending" | "sent" | "gave_up";
   /** The page said it finished with some not sent. */
   finished?: boolean;
+  /**
+   * How many Items the member still had when the page finished: those
+   * removed while sending are no longer expected. Checked before it is kept;
+   * without it, the count the page gave at Send.
+   */
+  keptItems?: number;
   /** What has arrived in ResourceSpace, by upload id. */
   sent: Record<string, MediaKind>;
   /** What went (or why nothing did), and when. */
@@ -95,8 +104,12 @@ export interface Notifier {
   progress(submissionId: string): void;
   /** An Item is in ResourceSpace. Sends the complete email if it was the last one. */
   itemSent(submissionId: string, uploadId: string, kind: MediaKind): Promise<void>;
-  /** The page says it finished with some not sent. Only the member who started it may say so. */
-  finished(submissionId: string, owner: string): Promise<"ok" | "not_found">;
+  /**
+   * The page says it finished with some not sent, and how many Items the
+   * member kept (`keptItems`, untrusted: ignored unless it fits). Only the
+   * member who started it may say so.
+   */
+  finished(submissionId: string, owner: string, keptItems?: unknown): Promise<"ok" | "not_found">;
   /** Whether its email is still to go: its record must stay on staging (the sweep). */
   pending(submissionId: string): boolean;
   /** Sends whatever stalled email is due now. The timers call it; tests too, after moving the clock on. */
@@ -168,6 +181,8 @@ export function createNotifier(deps: {
   }
 
   const sentCount = (e: Entry) => Object.keys(e.state.sent).length;
+  /** How many are expected: what the member kept, if the page said so, else the count given at Send. */
+  const expectedOf = (e: Entry) => e.state.keptItems ?? e.record?.expectedItems;
   const isPending = (e: Entry | undefined): e is Entry => !!e && e.state.status === "pending" && !e.sending;
 
   /**
@@ -177,7 +192,7 @@ export function createNotifier(deps: {
    */
   function decide(e: Entry, reason: "item" | "finished" | "stalled"): void {
     if (!isPending(e)) return;
-    const expected = e.record?.expectedItems;
+    const expected = expectedOf(e);
     if (expected !== undefined && sentCount(e) >= expected) return send(e, "complete");
     if (reason === "item") return;
     if (!e.record) return send(e, "unknown", reason);
@@ -202,7 +217,7 @@ export function createNotifier(deps: {
       ...(e.damaged ? {} : { submitter: e.state.submitter }),
       sent: { photos: kinds.length - videos, videos },
       ...(r && kind !== "unknown"
-        ? { expectedItems: r.expectedItems, details: r.details, ownDetails: Object.keys(r.items ?? {}).length }
+        ? { expectedItems: expectedOf(e) ?? r.expectedItems, details: r.details, ownDetails: Object.keys(r.items ?? {}).length }
         : {}),
       ...(kind === "partial" && reason
         ? { why: reason === "finished" ? ({ finished: true } as const) : { stalledMinutes: Math.round(stallMs / 60_000) } }
@@ -261,6 +276,8 @@ export function createNotifier(deps: {
       if (s.submissionId !== id || typeof s.owner !== "string" || typeof s.status !== "string") return undefined;
       if (typeof s.submitter?.name !== "string" || typeof s.submitter.email !== "string") return undefined;
       if (typeof s.sent !== "object" || s.sent === null) return undefined;
+      // Checked before it was written; one that is not a count is left out.
+      if (s.keptItems !== undefined && !Number.isInteger(s.keptItems)) delete s.keptItems;
       return s as NotifyState;
     } catch {
       return undefined;
@@ -346,11 +363,26 @@ export function createNotifier(deps: {
       decide(e, "item");
     },
 
-    async finished(submissionId, owner) {
+    async finished(submissionId, owner, keptItems) {
       const e = all.get(submissionId);
       if (!e || e.damaged || e.state.owner !== owner) return "not_found";
       if (!isPending(e) || e.state.finished) return "ok";
       e.state.finished = true;
+      if (keptItems !== undefined) {
+        // At least what has already arrived, and no more than were expected at Send.
+        const max = e.record?.expectedItems;
+        const n = typeof keptItems === "number" && Number.isInteger(keptItems) ? keptItems : undefined;
+        if (n !== undefined && max !== undefined && n >= Math.max(1, sentCount(e)) && n <= max) {
+          e.state.keptItems = n;
+        } else {
+          log("ignored the page's count of Items kept", {
+            submissionId,
+            keptItems: typeof keptItems === "number" ? keptItems : typeof keptItems,
+            sent: sentCount(e),
+            expected: max,
+          });
+        }
+      }
       await save(e);
       decide(e, "finished");
       return "ok";

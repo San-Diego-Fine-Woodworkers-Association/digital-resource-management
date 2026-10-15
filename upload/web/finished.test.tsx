@@ -9,24 +9,24 @@ afterEach(() => {
 });
 
 describe("telling the service the page finished", () => {
-  it("posts to the Submission's finished address, as JSON, and keeps going if the tab closes", () => {
+  it("posts how many the member kept to the Submission's finished address, as JSON, and keeps going if the tab closes", () => {
     const fetch = vi.fn(async () => new Response(null, { status: 202 }));
     vi.stubGlobal("fetch", fetch);
-    reportFinished("abcdefghjkmn");
+    reportFinished("abcdefghjkmn", 9);
     expect(fetch).toHaveBeenCalledTimes(1);
     const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("/upload/api/submissions/abcdefghjkmn/finished");
-    expect(init).toMatchObject({ method: "POST", credentials: "same-origin", keepalive: true, body: "{}" });
+    expect(init).toMatchObject({ method: "POST", credentials: "same-origin", keepalive: true, body: '{"keptItems":9}' });
     expect(init.headers).toEqual({ "content-type": "application/json" });
   });
 
   it("never throws, whatever happens", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("offline"))));
-    expect(() => reportFinished("abcdefghjkmn")).not.toThrow();
+    expect(() => reportFinished("abcdefghjkmn", 1)).not.toThrow();
     vi.stubGlobal("fetch", () => {
       throw new TypeError("blocked");
     });
-    expect(() => reportFinished("abcdefghjkmn")).not.toThrow();
+    expect(() => reportFinished("abcdefghjkmn", 1)).not.toThrow();
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 });

@@ -65,9 +65,11 @@ describe("handing an arrived file over", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("says the connection dropped when something in front of the service answers instead (#58)", async () => {
+  it("says the service is busy, not the connection, when the proxy answers for it while it restarts", async () => {
     service(json(202, { status: "finishing" }), new Response("Bad Gateway", { status: 502 }));
-    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: false, reason: "connection" });
+    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: false, reason: "busy" });
+    service(new Response("Service Unavailable", { status: 503 }));
+    expect(await handOver({ uploadId: ID }, 1)).toEqual({ ok: false, reason: "busy" });
   });
 
   it("asks again when the service restarted before it began the hand-off (#58)", async () => {
@@ -120,9 +122,11 @@ describe("handing an arrived file over", () => {
 describe("why a request stopped (#58)", () => {
   it.each([
     [0, "", "connection"],
-    [502, "Bad Gateway", "connection"],
-    [503, "", "connection"],
-    [504, "Gateway Timeout", "connection"],
+    // The proxy answering while the service restarts or is down: not the member's connection (#59).
+    [502, "Bad Gateway", "busy"],
+    [503, "", "busy"],
+    [504, "Gateway Timeout", "busy"],
+    [502, undefined, "busy"],
     [503, JSON.stringify({ error: "unavailable" }), "busy"],
     [429, JSON.stringify({ error: "rate_limited" }), "busy"],
     [413, JSON.stringify({ error: "too_big" }), "too_big"],

@@ -5,7 +5,7 @@
 // sent.
 //
 // Interruptions (#59): while sending, the screen is kept awake and leaving
-// the page asks first. Offline, or signed out, or no longer a member, the
+// the page asks first (on Steps 1 to 3 too, once anything is chosen). Offline, or signed out, or no longer a member, the
 // page holds: nothing new starts and no automatic try runs, and it carries
 // on when the connection is back or the member has signed in again (in a
 // new tab, so the chosen photos stay here). A busy service holds the rest of
@@ -243,8 +243,10 @@ export function SendMedia({ sender, account }: { sender: Sender; account?: Accou
     const all = chosen.map((i) => states[i.key] ?? WAITING);
     if (all.length === 0 || !all.every(isSettled)) return;
     const sent = all.filter((s) => s.status === "sent").length;
-    // The Reviewers' email goes now (#61), partial if some are not in.
-    if (sent > 0) submission.current?.finished?.();
+    // The Reviewers' email goes now (#61), partial if some are not in. One the
+    // member removed while sending is no longer expected; one that can't be
+    // added, still here, is (they wanted to send it).
+    if (sent > 0) submission.current?.finished?.(all.length);
     if (sent === all.length) go("done");
     // With none sent, "most are in" would not be true: each stays with its Try again.
     else if (sent > 0) go("someNotSent");
@@ -327,7 +329,10 @@ export function SendMedia({ sender, account }: { sender: Sender; account?: Accou
   // Something is still on its way: keep the screen awake and ask before leaving.
   const going = step === "sending" && chosen.some((i) => !isSettled(states[i.key] ?? WAITING));
   useWakeLock(going);
-  useLeaveWarning(going);
+  // On Steps 1 to 3, anything chosen would be lost too. Moving between the
+  // steps (stepHistory.ts) stays on the page, so it never asks then.
+  const choosing = (step === "choose" || step === "describe" || step === "change") && chosen.length > 0;
+  useLeaveWarning(going || choosing);
 
   /** Try again for every one that was not sent and can be (the end screen). */
   const tryTheRestAgain = () => {

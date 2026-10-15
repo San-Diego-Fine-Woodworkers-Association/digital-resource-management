@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Boot } from "../shared/boot.ts";
 import type { Options } from "../shared/details.ts";
 import { App } from "./App.tsx";
+import { failureOf } from "./send.ts";
 import type { BeginResult, OptionsResult, SendEvents, SendResult, Sender, SessionCheck, Start } from "./send.ts";
 
 const boot: Boot = {
@@ -45,6 +46,8 @@ function fakeSender(
 ) {
   const calls: Call[] = [];
   const starts: Start[] = [];
+  /** How many the member kept, each time the page said it finished (#61). */
+  const finished: number[] = [];
   let submissions = 0;
   const sender: Sender = {
     session: opts.session ?? (async () => "signed_in"),
@@ -61,11 +64,12 @@ function fakeSender(
             new Promise((resolve) => {
               calls.push({ submission, file, events, item, finish: resolve });
             }),
+          finished: (keptItems) => void finished.push(keptItems),
         },
       };
     },
   };
-  return { sender, calls, starts, submissions: () => submissions };
+  return { sender, calls, starts, finished, submissions: () => submissions };
 }
 
 const MB = 1024 * 1024;
@@ -654,6 +658,38 @@ describe("sending", () => {
     await act(async () => calls[2]!.finish({ ok: true }));
 
     expect(screen.getByRole("heading", { name: "Thank you! We have your 2 photos." })).toBeInTheDocument();
+  });
+
+  it("tells the service how many the member kept when it ends, so one removed is not counted as missing (#61)", async () => {
+    const user = userEvent.setup();
+    const { sender, calls, finished } = fakeSender();
+    render(<App boot={boot} sender={sender} />);
+    await pick(user, [photo("a.jpg"), video("b.mov"), photo("c.jpg")]);
+    await describeAndSend(user);
+
+    await act(async () => calls[1]!.finish({ ok: false, reason: "too_many_videos" }));
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await act(async () => calls[0]!.finish({ ok: true }));
+    expect(finished).toEqual([]);
+    await act(async () => calls[2]!.finish({ ok: true }));
+
+    expect(screen.getByRole("heading", { name: "Thank you! We have your 2 photos." })).toBeInTheDocument();
+    expect(finished).toEqual([2]);
+  });
+
+  it("still counts one that can't be added and was left in: the member wanted to send it (#61)", async () => {
+    const user = userEvent.setup();
+    const { sender, calls, finished } = fakeSender();
+    render(<App boot={boot} sender={sender} />);
+    await pick(user, [photo("a.jpg"), video("b.mov"), photo("c.jpg")]);
+    await describeAndSend(user);
+
+    await act(async () => calls[1]!.finish({ ok: false, reason: "too_many_videos" }));
+    await act(async () => calls[0]!.finish({ ok: true }));
+    await act(async () => calls[2]!.finish({ ok: true }));
+
+    expect(screen.getByRole("heading", { name: "Most of your photos are in." })).toBeInTheDocument();
+    expect(finished).toEqual([3]);
   });
 
   it.each([
@@ -1715,7 +1751,6 @@ describe("phone and sign-in interruptions (#59)", () => {
       const { sender, calls } = fakeSender();
       render(<App boot={boot} sender={sender} />);
       await pick(user, [photo("a.jpg"), photo("b.jpg")]);
-      expect(leaveWarns()).toBe(false);
       await describeAndSend(user);
 
       expect(leaveWarns()).toBe(true);
@@ -1724,6 +1759,77 @@ describe("phone and sign-in interruptions (#59)", () => {
       await act(async () => calls[1]!.finish({ ok: false, reason: "failed" }));
 
       expect(screen.getByRole("heading", { name: "Most of your photos are in." })).toBeInTheDocument();
+      expect(leaveWarns()).toBe(false);
+      await press(screen.getByRole("button", { name: "I'll do the rest later" }));
+      expect(screen.getByRole("heading", { name: "Thank you! We have your 1 photo." })).toBeInTheDocument();
+      expect(leaveWarns()).toBe(false);
+    });
+
+    it("asks first on Steps 1 to 3 once anything is chosen, and not with nothing chosen", async () => {
+      const user = userEvent.setup();
+      const { sender } = fakeSender();
+      render(<App boot={boot} sender={sender} />);
+      expect(leaveWarns()).toBe(false);
+      // Only one that can't be added: nothing chosen.
+      await pick(user, [gif("not-a-photo.jpg")]);
+      expect(tiles()).toHaveLength(0);
+      expect(leaveWarns()).toBe(false);
+
+      await pick(user, [photo("a.jpg")]);
+      expect(leaveWarns()).toBe(true);
+      await user.click(nextButton());
+      expect(leaveWarns()).toBe(true);
+      await fillRequired(user);
+      await user.click(nextButton());
+      expect(screen.getByRole("heading", { level: 2, name: "Change any single one (optional)" })).toBeInTheDocument();
+      expect(leaveWarns()).toBe(true);
+      // Back to Step 1 and taking it out again: nothing left to lose.
+      await user.click(screen.getByRole("button", { name: "Back" }));
+      await act(async () => history.back());
+      await waitFor(() =>
+        expect(screen.getByRole("heading", { level: 2, name: "Choose your photos and videos" })).toBeInTheDocument(),
+      );
+      await user.click(screen.getByRole("button", { name: "Take a.jpg out" }));
+      expect(tiles()).toHaveLength(0);
+      expect(leaveWarns()).toBe(false);
+    });
+
+    it("never asks when the member moves between steps with the browser's Back", async () => {
+      const user = userEvent.setup();
+      const warned = vi.fn();
+      window.addEventListener("beforeunload", warned);
+      try {
+        render(<App boot={boot} sender={fakeSender().sender} />);
+        await pick(user, [photo("a.jpg")]);
+        await user.click(nextButton());
+        await fillRequired(user);
+        await user.click(nextButton());
+        await act(async () => history.back());
+        await waitFor(() => expect(screen.getByRole("heading", { level: 2, name: "Tell us about them" })).toBeInTheDocument());
+        await act(async () => history.back());
+        await waitFor(() =>
+          expect(screen.getByRole("heading", { level: 2, name: "Choose your photos and videos" })).toBeInTheDocument(),
+        );
+        await user.click(nextButton());
+        await user.click(nextButton());
+        await user.click(screen.getByRole("button", { name: "Back" }));
+        expect(warned).not.toHaveBeenCalled();
+        // Still there for leaving the page itself.
+        expect(leaveWarns()).toBe(true);
+      } finally {
+        window.removeEventListener("beforeunload", warned);
+      }
+    });
+
+    it("stops asking on the thank-you", async () => {
+      const user = userEvent.setup();
+      const { sender, calls } = fakeSender();
+      render(<App boot={boot} sender={sender} />);
+      await pick(user, [photo("a.jpg")]);
+      await describeAndSend(user);
+      expect(leaveWarns()).toBe(true);
+      await act(async () => calls[0]!.finish({ ok: true }));
+      expect(screen.getByRole("heading", { name: "Thank you! We have your 1 photo." })).toBeInTheDocument();
       expect(leaveWarns()).toBe(false);
     });
   });
@@ -1864,6 +1970,22 @@ describe("phone and sign-in interruptions (#59)", () => {
 
       expect(screen.queryByText(/We'll keep trying/)).not.toBeInTheDocument();
       expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg", "a.jpg", "c.jpg"]);
+    });
+
+    it("says so, not Connection trouble, when the service is restarting or down behind the proxy", async () => {
+      const { calls } = await sendingWithClock([photo("a.jpg"), photo("b.jpg")]);
+      await act(async () => calls[0]!.finish({ ok: false, reason: failureOf(503, "") }));
+
+      expect(screen.getByText("We're busy right now. We'll keep trying for a few minutes.")).toBeInTheDocument();
+      expect(screen.queryByText(/Connection dropped/)).not.toBeInTheDocument();
+      // The same schedule as busy: the first try again after about a second.
+      await wait(1000);
+      expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg", "a.jpg"]);
+
+      // No answer at all is still the connection.
+      await act(async () => calls[2]!.finish({ ok: false, reason: failureOf(0, undefined) }));
+      expect(screen.queryByText(/We'll keep trying/)).not.toBeInTheDocument();
+      expect(statusOf("a.jpg")).toHaveTextContent(/Connection dropped/);
     });
 
     it("asks the member to try again once the automatic tries run out", async () => {
