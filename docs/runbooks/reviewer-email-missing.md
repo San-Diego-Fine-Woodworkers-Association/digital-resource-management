@@ -1,0 +1,114 @@
+# Runbook: the Reviewers' email did not arrive
+
+The upload service sends one email per Submission to
+`media-reviewers@sdfwa.org`. How and when:
+[the Reviewers' email](../upload-service.md#the-reviewers-email).
+
+**Nothing is lost when the email is missing.** Every Item is in Pending Review
+whatever happens to the email. Tell the Reviewers to check Pending Review in
+ResourceSpace while you look.
+
+```sh
+HOST=root@5.78.204.140   # the production host, see docs/host-setup.md
+```
+
+## Symptoms
+
+- A member says they sent photos, and the Reviewers got no email.
+- Items are in Pending Review with no email about them.
+- Some Reviewers get the email and others don't.
+
+## Check
+
+**1. Is it too early?** A Submission whose page closed partway sends its
+partial email only after 30 minutes with nothing arriving
+(`REVIEWER_EMAIL_STALL_MINUTES`).
+
+**2. Is the kill switch on?** In Dokploy's Environment tab, check
+`REVIEWER_EMAIL_PAUSED`. Anything but `false`, `0`, `no`, `off` or empty
+pauses it, a typo included.
+
+**3. What does the log say?** Find the Submission ID: it is the Submission ID
+field on any of its Items in ResourceSpace.
+
+```sh
+ssh $HOST 'docker logs --since 48h $(docker ps -q --filter label=com.docker.compose.service=upload) 2>&1' \
+  | grep -E 'reviewer_email|reviewer email' | grep '<submission id>'
+```
+
+Leave out the last `grep` to see every email. What you may find:
+
+| In the log | Means | Go to |
+|---|---|---|
+| `"outcome":"sent_complete"`, `sent_partial` or `sent_unknown` | The relay accepted it. The problem is after the relay: the Group, or spam. | Fix A |
+| `could not send the reviewer email` (several), then `"outcome":"failed"` | The relay refused it 4 times. The line carries the relay's error. | Fix B |
+| `could not send the reviewer email` without a `failed` yet | Still retrying (after 30 s, 2 min and 10 min). | wait, then recheck |
+| `no reviewer email: nothing in the Submission arrived` | Nothing reached ResourceSpace, so there was nothing to review. | the member's uploads: [ResourceSpace is down](resourcespace-down.md) |
+| `could not schedule the reviewer email` or `could not save the reviewer email's state` | Something went wrong writing to staging. | [Staging is full](staging-full.md) |
+| Nothing at all for that Submission | The kill switch was on when it started, or the container was recreated since (its log went with it). | step 2; [Logs](../upload-service.md#logs-and-the-audit-trail) |
+
+**4. Can the server reach the relay?**
+
+```sh
+HOST_SSH=$HOST scripts/host-setup.sh check
+```
+
+Check "Outbound SMTP" shows `smtp-relay.gmail.com:587 open`, and note the
+public IPv4 and IPv6 it prints. Both must be allowed on the relay; the server
+connects over IPv6. The allowed addresses on 2026-10-11 were `5.78.204.140/32`
+and `2a01:4ff:1f0:9c7e::1/128` (#35).
+
+**5. Does a test message get through?**
+
+```sh
+HOST_SSH=$HOST scripts/host-setup.sh mail-test media-reviewers@sdfwa.org
+```
+
+It prints the SMTP conversation. `250 2.0.0 OK` means the relay accepted it.
+
+## Fix
+
+**A. The relay accepted it, but it didn't reach a Reviewer.**
+
+- Ask them to check spam, and to mark it "not spam".
+- Check they are a member of `media-reviewers@sdfwa.org`, and their delivery
+  setting in the Group is not "No email": [Adding a Reviewer](../upload-service.md#adding-or-removing-a-reviewer).
+- Check the Group still lets `no-reply@sdfwa.org` post (Group settings > Who
+  can post). If not, the Group rejects it, often with a bounce to
+  `no-reply@sdfwa.org`, which is not a mailbox.
+
+**B. The relay refused it.** Read the relay's error in
+`could not send the reviewer email`.
+
+- **The relay does not recognise the server** (for example "Invalid
+  credentials for relay"): the server's public IPv4 or IPv6 is not allowed.
+  This happens after a server move or an IP change. In the Google Workspace
+  admin console, Apps > Google Workspace > Gmail > Routing > SMTP relay service,
+  add the addresses `check` printed. See
+  [host-setup.md](../host-setup.md#reviewer-notification-mail).
+- **Connection timed out or refused:** port 587 is blocked. Check the
+  `check` output and Hetzner's firewall.
+- **A TLS error:** the service requires STARTTLS on 587 with TLS 1.2 or later.
+  Check `SMTP_HOST` and `SMTP_PORT` have not been changed from their defaults.
+- **A sender refused:** `REVIEWER_EMAIL_FROM` must be an `@sdfwa.org` address,
+  because the relay allows only addresses in our domains.
+
+An email that was given up is **not sent again**. Once the fix is in, send the
+Reviewers the Submission's Pending Review link by hand:
+
+```
+https://media.sdfwa.org/pages/search.php?search=submissionid%3A<submission id>&archive=-1
+```
+
+**Kill switch was on:** set `REVIEWER_EMAIL_PAUSED=false` and redeploy.
+Submissions started while it was on never get an email; send their links by
+hand as above.
+
+## Verify
+
+1. `HOST_SSH=$HOST scripts/host-setup.sh mail-test media-reviewers@sdfwa.org`
+   reaches every Reviewer's inbox, not spam.
+2. Send two photos through `https://media.sdfwa.org/upload`. Within a minute
+   of the second being sent, every Reviewer gets "New photos from …", and
+   **Open them in Pending Review** shows those two Items.
+3. The log shows `"event":"reviewer_email","outcome":"sent_complete"`.
