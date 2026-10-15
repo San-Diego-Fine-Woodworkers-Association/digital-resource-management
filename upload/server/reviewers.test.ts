@@ -502,4 +502,54 @@ describe("the kill switch", () => {
     expect(smtp!.tries).toBe(0);
     expect((await readdir(h!.stagingDir)).some((n) => n.endsWith(".notify.json"))).toBe(false);
   });
+
+  const files = async (s: string) => (await readdir(h!.stagingDir)).filter((n) => n.startsWith(`${s}.`)).sort();
+  const DAY = 24 * 60 * MINUTE;
+
+  it("holds an email that was still to go, past the sweep, and sends it once the switch is off again", async () => {
+    const { c } = await start();
+    const s = await c.startSubmission(COOKIE, startBody({ expectedItems: 2 }));
+    await sendOne(s);
+    await settle();
+    expect(smtp!.received).toHaveLength(0);
+
+    await h!.restart({ REVIEWER_EMAIL_PAUSED: "true" });
+    h!.advance(25 * 60 * MINUTE);
+    await h!.sweep();
+    await stall();
+    expect(smtp!.tries).toBe(0);
+    expect(await files(s)).toEqual([`${s}.notify.json`, `${s}.submission.json`]);
+    expect(h!.logLines).toContainEqual({ message: "reviewer emails held while paused", fields: { count: 1 } });
+
+    await h!.restart({ REVIEWER_EMAIL_PAUSED: "false" });
+    await stall();
+    expect(only().mail.subject).toBe("Partly sent: New photos from Pat Member: Dovetail class, May 3 (1 of 2 sent)");
+    await stall(2 * 24 * 60);
+    await h!.restart();
+    await stall();
+    expect(smtp!.received).toHaveLength(1);
+  });
+
+  it("gives up one held for more than 7 days, logged and audited, and the sweep then clears it", async () => {
+    const { c } = await start();
+    const s = await c.startSubmission(COOKIE, startBody({ expectedItems: 2 }));
+    await sendOne(s);
+    await settle();
+
+    await h!.restart({ REVIEWER_EMAIL_PAUSED: "true" });
+    h!.advance(8 * DAY);
+    await h!.sweep();
+    expect(await files(s)).toEqual([`${s}.notify.json`, `${s}.submission.json`]);
+
+    await h!.restart({ REVIEWER_EMAIL_PAUSED: "false" });
+    await stall();
+    expect(smtp!.tries).toBe(0);
+    expect(h!.notifier().pending(s)).toBe(false);
+    expect(h!.logLines.map((l) => l.message)).toContain("reviewer email given up: held too long");
+    expect(emailLines(h!)).toMatchObject([{ outcome: "held_too_long", submissionId: s }]);
+
+    h!.advance(DAY + MINUTE);
+    await h!.sweep();
+    expect(await files(s)).toEqual([]);
+  });
 });

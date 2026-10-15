@@ -1758,8 +1758,9 @@ describe("phone and sign-in interruptions (#59)", () => {
       expect(leaveWarns()).toBe(true);
       await act(async () => calls[1]!.finish({ ok: false, reason: "failed" }));
 
+      // One not sent is still here: leaving would lose it.
       expect(screen.getByRole("heading", { name: "Most of your photos are in." })).toBeInTheDocument();
-      expect(leaveWarns()).toBe(false);
+      expect(leaveWarns()).toBe(true);
       await press(screen.getByRole("button", { name: "I'll do the rest later" }));
       expect(screen.getByRole("heading", { name: "Thank you! We have your 1 photo." })).toBeInTheDocument();
       expect(leaveWarns()).toBe(false);
@@ -1819,6 +1820,31 @@ describe("phone and sign-in interruptions (#59)", () => {
       } finally {
         window.removeEventListener("beforeunload", warned);
       }
+    });
+
+    it("asks on \"Most of your photos are in\" with nothing but the browser's own dialog, and not once all are in", async () => {
+      const user = userEvent.setup();
+      const { sender, calls } = fakeSender();
+      render(<App boot={boot} sender={sender} />);
+      await pick(user, [photo("a.jpg"), photo("b.jpg")]);
+      await describeAndSend(user);
+      await act(async () => calls[0]!.finish({ ok: true }));
+      await act(async () => calls[1]!.finish({ ok: false, reason: "failed" }));
+      expect(screen.getByRole("heading", { name: "Most of your photos are in." })).toBeInTheDocument();
+
+      const event = new Event("beforeunload", { cancelable: true }) as BeforeUnloadEvent;
+      window.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      // No words of ours: browsers show their own "Leave site?". (jsdom's
+      // plain Event turns the empty string into false.)
+      expect([false, ""]).toContain(event.returnValue);
+
+      // Try again, and this time it goes: the thank-you, and nothing to ask about.
+      await press(screen.getByRole("button", { name: "Try again" }));
+      expect(leaveWarns()).toBe(true);
+      await act(async () => calls[2]!.finish({ ok: true }));
+      expect(screen.getByRole("heading", { name: "Thank you! We have your 2 photos." })).toBeInTheDocument();
+      expect(leaveWarns()).toBe(false);
     });
 
     it("stops asking on the thank-you", async () => {

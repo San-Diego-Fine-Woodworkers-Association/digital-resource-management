@@ -37,7 +37,7 @@ import { checkHealth, createReachability } from "./health.ts";
 import { checkDetails, checkItems, type Options } from "../shared/details.ts";
 import { createItems, type HandOffRequest, type HandOffResult } from "./items.ts";
 import { rightsRecord } from "./naming.ts";
-import { createNotifier, pausedNotifier, type Notifier } from "./notify.ts";
+import { createNotifier, createPausedNotifier, type Notifier } from "./notify.ts";
 import { createLiveOptions } from "./options.ts";
 import { createQuotas } from "./quotas.ts";
 import { addressKey, clientIp, createRateLimiter } from "./ratelimit.ts";
@@ -228,7 +228,7 @@ export function createService(config: Config, options: ServiceOptions = {}): Ser
   const perAddress = createRateLimiter(config.rateLimits.ip, now);
   const submissions = createSubmissions(config.limits, { dir: config.stagingDir, now });
   const notifier = config.reviewerEmail.paused
-    ? pausedNotifier
+    ? createPausedNotifier({ dir: config.stagingDir, log })
     : createNotifier({
         dir: config.stagingDir,
         stallMs: config.reviewerEmail.stallMs,

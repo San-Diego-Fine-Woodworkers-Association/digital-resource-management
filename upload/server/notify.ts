@@ -41,7 +41,15 @@
 // accepted over a lost email (#61 decision 5). A failed send is tried again
 // up to 3 times with growing pauses, then logged in the audit trail and
 // given up; the member never sees any of it.
-import { readdir, readFile, rename, writeFile } from "node:fs/promises";
+//
+// The kill switch (REVIEWER_EMAIL_PAUSED) holds the emails still to go, it
+// does not drop them: nothing new is scheduled or sent, but each pending
+// state file (and so its Submission's record) is kept from the staging sweep
+// however long the pause lasts. The next start with the switch off re-arms
+// them as after any restart. One left untouched for more than a week
+// (HOLD_LIMIT_MS: a long pause, or the service down that long) is given up
+// then, logged and audited, instead of reaching the Reviewers that late.
+import { readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Details } from "../shared/details.ts";
 import type { MediaKind } from "../shared/media.ts";
@@ -52,6 +60,12 @@ import type { SubmissionRecord } from "./submissions.ts";
 
 /** The pauses before each of the 3 tries after a failed send. */
 export const EMAIL_RETRY_DELAYS_MS = [30_000, 2 * 60_000, 10 * 60_000];
+
+/**
+ * How long an email still to go may wait with nothing happening to it (its
+ * state file not written) before a start gives it up: 7 days.
+ */
+export const HOLD_LIMIT_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** How long a sent email is remembered in memory (its state file goes with the staging sweep). */
 const REMEMBER_FOR_MS = 24 * 60 * 60 * 1000;
@@ -294,6 +308,8 @@ export function createNotifier(deps: {
     async load() {
       const names = await readdir(dir);
       const pending: Entry[] = [];
+      /** When each pending state file was last written. */
+      const lastWritten = new Map<Entry, number>();
       for (const name of names) {
         const id = STATE.exec(name)?.[1];
         if (!id || !isSubmissionId(id) || all.has(id)) continue;
@@ -310,6 +326,8 @@ export function createNotifier(deps: {
         if (state) entry.record = await recordOf(state);
         all.set(id, entry);
         pending.push(entry);
+        const written = (await stat(path.join(dir, name)).catch(() => undefined))?.mtimeMs;
+        if (written !== undefined) lastWritten.set(entry, written);
       }
       if (pending.length === 0) return;
       // What arrived while the state was not written (a crash between the two).
@@ -324,6 +342,15 @@ export function createNotifier(deps: {
         }
       }
       for (const e of pending) {
+        const held = now() - (lastWritten.get(e) ?? now());
+        if (held > HOLD_LIMIT_MS) {
+          // Too late to be of use: the Items are in Pending Review all the same.
+          const submissionId = e.state.submissionId;
+          log("reviewer email given up: held too long", { submissionId, heldDays: Math.floor(held / (24 * 60 * 60 * 1000)) });
+          audit.record({ event: "reviewer_email", outcome: "held_too_long", submissionId });
+          await finish(e, "gave_up", "held_too_long");
+          continue;
+        }
         log("reviewer email still to send after a restart", { submissionId: e.state.submissionId, known: !!e.record });
         arm(e);
         if (e.state.finished) decide(e, "finished");
@@ -406,18 +433,37 @@ export function createNotifier(deps: {
   };
 }
 
-/** A notifier that does nothing: the kill switch (REVIEWER_EMAIL_PAUSED). */
-export const pausedNotifier: Notifier = {
-  load: async () => {},
-  started: async () => {},
-  progress: () => {},
-  itemSent: async () => {},
-  finished: async () => "ok",
-  pending: () => false,
-  check: () => {},
-  idle: async () => {},
-  close: () => {},
-};
+/**
+ * The kill switch (REVIEWER_EMAIL_PAUSED): schedules and sends nothing, but
+ * holds every email that was still to go when it was turned on. Its state
+ * file stays pending, and `pending` keeps it and its record from the sweep,
+ * so the next start with the switch off sends it. A state file it cannot
+ * read is held too, as the notifier itself would.
+ */
+export function createPausedNotifier(deps: { dir: string; log: (message: string, fields?: Record<string, unknown>) => void }): Notifier {
+  const held = new Set<string>();
+  return {
+    async load() {
+      for (const name of await readdir(deps.dir)) {
+        const id = STATE.exec(name)?.[1];
+        if (!id || !isSubmissionId(id)) continue;
+        const status = await readFile(path.join(deps.dir, name), "utf8")
+          .then((raw) => (JSON.parse(raw) as { status?: unknown }).status)
+          .catch(() => undefined);
+        if (status !== "sent" && status !== "gave_up") held.add(id);
+      }
+      if (held.size > 0) deps.log("reviewer emails held while paused", { count: held.size });
+    },
+    started: async () => {},
+    progress: () => {},
+    itemSent: async () => {},
+    finished: async () => "ok",
+    pending: (submissionId) => held.has(submissionId),
+    check: () => {},
+    idle: async () => {},
+    close: () => {},
+  };
+}
 
 function isRecordShape(r: SubmissionRecord, id: string): boolean {
   const d = r.details as Partial<Details> | undefined;

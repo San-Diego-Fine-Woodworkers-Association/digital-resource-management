@@ -5,7 +5,8 @@
 // sent.
 //
 // Interruptions (#59): while sending, the screen is kept awake and leaving
-// the page asks first (on Steps 1 to 3 too, once anything is chosen). Offline, or signed out, or no longer a member, the
+// the page asks first (also on Steps 1 to 3 once anything is chosen, and on
+// "Most of your photos are in"). Offline, or signed out, or no longer a member, the
 // page holds: nothing new starts and no automatic try runs, and it carries
 // on when the connection is back or the member has signed in again (in a
 // new tab, so the chosen photos stay here). A busy service holds the rest of
@@ -329,10 +330,13 @@ export function SendMedia({ sender, account }: { sender: Sender; account?: Accou
   // Something is still on its way: keep the screen awake and ask before leaving.
   const going = step === "sending" && chosen.some((i) => !isSettled(states[i.key] ?? WAITING));
   useWakeLock(going);
-  // On Steps 1 to 3, anything chosen would be lost too. Moving between the
-  // steps (stepHistory.ts) stays on the page, so it never asks then.
+  // On Steps 1 to 3, anything chosen would be lost too, and on "Most of your
+  // photos are in" any not sent. Moving between the steps (stepHistory.ts)
+  // stays on the page, so it never asks then. The dialog's words are the
+  // browser's own.
   const choosing = (step === "choose" || step === "describe" || step === "change") && chosen.length > 0;
-  useLeaveWarning(going || choosing);
+  const notAllIn = step === "someNotSent" && chosen.some((i) => states[i.key]?.status !== "sent");
+  useLeaveWarning(going || choosing || notAllIn);
 
   /** Try again for every one that was not sent and can be (the end screen). */
   const tryTheRestAgain = () => {

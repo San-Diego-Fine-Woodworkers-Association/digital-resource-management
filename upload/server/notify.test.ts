@@ -7,7 +7,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NO_DETAILS } from "../shared/details.ts";
 import { createAuditLog } from "./audit.ts";
-import { createNotifier, type Notifier } from "./notify.ts";
+import { createNotifier, createPausedNotifier, HOLD_LIMIT_MS, type Notifier } from "./notify.ts";
 import { composeEmail, escapeHtml, oneLine, reviewLink, type Email } from "./reviewer-email.ts";
 import type { SubmissionRecord } from "./submissions.ts";
 
@@ -25,6 +25,74 @@ const record = (expectedItems: number, extra: Partial<SubmissionRecord> = {}): S
   ...extra,
 });
 const PAT = { name: "Pat Member", email: "pat@example.org" };
+
+describe("the kill switch holds what was still to go", () => {
+  const DAY = 24 * 60 * MINUTE;
+  let dir: string;
+  beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    dir = await mkdtemp(path.join(tmpdir(), "notify-test-"));
+  });
+  afterEach(async () => {
+    vi.useRealTimers();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function notifier(sent: Email[], audit: string[] = []) {
+    return createNotifier({
+      dir,
+      stallMs: 30 * MINUTE,
+      publicBaseUrl: BASE,
+      mailer: async (email) => void sent.push(email),
+      audit: createAuditLog((line) => audit.push(line)),
+      readRecord: async () => record(2),
+      log: () => {},
+    });
+  }
+
+  /** One email still to go, with one of 2 in, written now; then the service stops. */
+  async function pendingOne() {
+    const n = notifier([]);
+    await n.started(record(2), PAT);
+    await n.itemSent("abcdefghjkmn", "a".repeat(32), "photo");
+    await n.idle();
+    n.close();
+  }
+
+  it("keeps it pending through a paused day and more, then sends it exactly once", async () => {
+    await pendingOne();
+    const paused = createPausedNotifier({ dir, log: () => {} });
+    await paused.load();
+    await vi.advanceTimersByTimeAsync(25 * 60 * MINUTE);
+    expect(paused.pending("abcdefghjkmn")).toBe(true);
+    expect(paused.pending("zzzzzzzzzzzz")).toBe(false);
+
+    const sent: Email[] = [];
+    const n = notifier(sent);
+    await n.load();
+    await vi.advanceTimersByTimeAsync(31 * MINUTE);
+    await n.idle();
+    await vi.advanceTimersByTimeAsync(2 * DAY);
+    await n.idle();
+    expect(sent.map((e) => e.subject)).toEqual(["Partly sent: New photos from Pat Member: Bench build (1 of 2 sent)"]);
+    n.close();
+  });
+
+  it("gives it up after more than 7 days held, and says so in the audit trail", async () => {
+    await pendingOne();
+    await vi.advanceTimersByTimeAsync(HOLD_LIMIT_MS + MINUTE);
+    const sent: Email[] = [];
+    const audit: string[] = [];
+    const n = notifier(sent, audit);
+    await n.load();
+    await vi.advanceTimersByTimeAsync(31 * MINUTE);
+    await n.idle();
+    expect(sent).toEqual([]);
+    expect(n.pending("abcdefghjkmn")).toBe(false);
+    expect(audit.map((l) => JSON.parse(l).outcome)).toEqual(["held_too_long"]);
+    n.close();
+  });
+});
 
 describe("the stall deadline", () => {
   let dir: string;
