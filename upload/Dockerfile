@@ -11,7 +11,7 @@ RUN npm run build \
  && find server -name '*.test.ts' -delete \
  && rm -rf server/testing
 
-# --- runtime dependencies: only the tus server ---------------------------------
+# --- runtime dependencies: the tus server and nodemailer ----------------------
 # The web app's libraries (React, Uppy, the design system) are bundled into
 # dist/web at build time, so they are devDependencies and not installed here.
 FROM node:24-alpine AS deps
@@ -21,7 +21,8 @@ RUN npm ci --omit=dev --no-audit --no-fund
 
 # --- runtime -----------------------------------------------------------------
 # Node runs the server's TypeScript directly (built-in type stripping). Its
-# only runtime dependencies are @tus/server and @tus/file-store (ADR 0001).
+# only runtime dependencies are @tus/server and @tus/file-store (ADR 0001),
+# and nodemailer for the Reviewers' email (ADR 0006).
 FROM node:24-alpine
 ENV NODE_ENV=production \
     PORT=8080 \

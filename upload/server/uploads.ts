@@ -122,7 +122,12 @@ function sendError(res: http.ServerResponse, status: number, error: string, retr
 export function createUploads(
   config: Config,
   submissions: Submissions,
-  deps: { staging: Staging; quotas: Quotas },
+  deps: {
+    staging: Staging;
+    quotas: Quotas;
+    /** Something arrived for this Submission (an upload made, or a chunk): its Reviewers' email waits longer (#61). */
+    onProgress?: (submissionId: string) => void;
+  },
 ): Uploads {
   const { staging, quotas } = deps;
   const store = new FileStore({ directory: config.stagingDir });
@@ -174,6 +179,7 @@ export function createUploads(
         throw no(node, 429, quota.refusal);
       }
       created.set(node, upload.id);
+      deps.onProgress?.(submissionId);
       const name = upload.metadata?.filename ?? upload.metadata?.name;
       return {
         metadata: { owner: user.id, filename: originalFileName(name), submission: submissionId, item: String(room.itemNumber) },
@@ -247,6 +253,8 @@ export function createUploads(
           return answer(res, 429, slot.refusal, slot.retryAfterS);
         }
         writing = slot;
+        // A chunk is arriving: the Reviewers' email waits for the rest (#61).
+        deps.onProgress?.(mine.submissionId);
       }
       users.set(req, user);
       responses.set(req, res);

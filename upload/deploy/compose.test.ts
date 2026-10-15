@@ -128,6 +128,34 @@ describe("the upload container", () => {
   });
 });
 
+// The Reviewers' email (#61): its relay, addresses and stall time, and its kill switch.
+describe("passes through the reviewer email settings", () => {
+  const EMAIL = [
+    "REVIEWER_EMAIL_PAUSED",
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_EHLO_NAME",
+    "REVIEWER_EMAIL_FROM",
+    "REVIEWER_EMAIL_TO",
+    "REVIEWER_EMAIL_STALL_MINUTES",
+  ];
+  const defaults = Object.fromEntries(
+    (upload.environment as string[]).flatMap((line) => {
+      const m = /^(\w+)=\$\{(\w+):-([^}]*)\}$/.exec(line);
+      return m && m[1] === m[2] && EMAIL.includes(m[1]!) ? [[m[1]!, m[3]!]] : [];
+    }),
+  );
+
+  it("each one, under its own name", () => {
+    expect(Object.keys(defaults).sort()).toEqual([...EMAIL].sort());
+  });
+
+  it("with the decided values as defaults, sending", () => {
+    expect(loadConfig(defaults).reviewerEmail).toEqual(loadConfig({}).reviewerEmail);
+    expect(loadConfig(defaults).reviewerEmail.paused).toBe(false);
+  });
+});
+
 describe("routing on the media host name", () => {
   it("sends only /upload and below to the upload service, ahead of ResourceSpace", () => {
     const labels = labelsOf("upload");

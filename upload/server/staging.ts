@@ -15,7 +15,8 @@
 //   <upload id>, <upload id>.json   a photo or video and tus's record of it
 //   <upload id>.item.json           its hand-off record (items.ts)
 //   <submission id>.submission.json a Submission's answers (submissions.ts)
-//   ....item.json.tmp, ....submission.json.tmp   a record being written
+//   <submission id>.notify.json     its Reviewers' email (notify.ts, #61)
+//   ....item.json.tmp, ....submission.json.tmp, ....notify.json.tmp   a record being written
 //
 // Kept while anyone may still need it, removed 24 hours after that (#23):
 //   - an upload, while it has had a chunk (or a hand-off step) in the last
@@ -26,7 +27,10 @@
 //     hours: a repeated hand-off still answers "sent", and the page's status
 //     poll still has its answer.
 //   - a Submission's record, while any upload on staging belongs to it or it
-//     took one in the last 24 hours, and for 24 hours after it was started.
+//     took one in the last 24 hours, and for 24 hours after it was started;
+//     and always while its Reviewers' email is still to go (#61).
+//   - the state of a Submission's Reviewers' email, while it is still to go,
+//     and for 24 hours after it went.
 //
 // Leftovers, at startup only, when nothing else is running: half an upload
 // (bytes without tus's record or the other way round), an upload whose
@@ -63,7 +67,8 @@ const UPLOAD = /^[0-9a-f]{32}$/;
 const UPLOAD_INFO = /^([0-9a-f]{32})\.json$/;
 const ITEM = /^([0-9a-f]{32})\.item\.json$/;
 const SUBMISSION = /^([a-z0-9]{12})\.submission\.json$/;
-const PARTIAL = /^(?:[0-9a-f]{32}\.item|[a-z0-9]{12}\.submission)\.json\.tmp$/;
+const NOTIFY = /^([a-z0-9]{12})\.notify\.json$/;
+const PARTIAL = /^(?:[0-9a-f]{32}\.item|[a-z0-9]{12}\.(?:submission|notify))\.json\.tmp$/;
 
 /** An upload on staging, as tus recorded it. */
 export interface StagedUpload {
@@ -85,6 +90,8 @@ export interface SweepOptions {
   startup?: boolean;
   /** Whether a Submission is still taking uploads (submissions.ts). */
   inUse?: (submissionId: string) => boolean;
+  /** Whether a Submission's Reviewers' email is still to go (notify.ts): its record and state stay. */
+  pending?: (submissionId: string) => boolean;
   /** An upload was removed, so whatever counts it can stop counting it. */
   onRemoved?: (upload: StagedUpload) => void;
 }
@@ -129,7 +136,7 @@ export function createStaging(opts: {
   async function entries(): Promise<Map<string, Entry>> {
     const found = new Map<string, Entry>();
     for (const name of await readdir(dir)) {
-      if (!UPLOAD.test(name) && !UPLOAD_INFO.test(name) && !ITEM.test(name) && !SUBMISSION.test(name) && !PARTIAL.test(name)) continue;
+      if (!UPLOAD.test(name) && !UPLOAD_INFO.test(name) && !ITEM.test(name) && !SUBMISSION.test(name) && !NOTIFY.test(name) && !PARTIAL.test(name)) continue;
       try {
         const st = await lstat(path.join(dir, name));
         // Only plain files the service made; never a directory or a link.
@@ -232,7 +239,12 @@ export function createStaging(opts: {
     const wanted = new Set(uploads.map((u) => u.submissionId));
     for (const e of [...found.values()]) {
       const id = SUBMISSION.exec(e.name)?.[1];
-      if (!id || wanted.has(id) || o.inUse?.(id) || !old(e, ABANDONED_AFTER_MS)) continue;
+      if (!id || wanted.has(id) || o.inUse?.(id) || o.pending?.(id) || !old(e, ABANDONED_AFTER_MS)) continue;
+      await remove(e.name);
+    }
+    for (const e of [...found.values()]) {
+      const id = NOTIFY.exec(e.name)?.[1];
+      if (!id || o.pending?.(id) || !old(e, ABANDONED_AFTER_MS)) continue;
       await remove(e.name);
     }
 

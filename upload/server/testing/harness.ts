@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { loadConfig } from "../config.ts";
 import { createService, type Service } from "../app.ts";
+import type { Notifier } from "../notify.ts";
 import { statVolume, type SweepReport, type VolumeStats } from "../staging.ts";
 import { createFakeResourceSpace, FAKE_RS_KEY, FAKE_RS_USER, type FakeResourceSpace } from "./fake-rs.ts";
 
@@ -132,6 +133,8 @@ export interface Harness {
   volume?: VolumeStats;
   /** Runs the staging sweep now. */
   sweep: () => Promise<SweepReport>;
+  /** The Reviewers' email of the service running now (off unless the test turns it on). */
+  notifier: () => Notifier;
   /** Stops the service and starts it again on the same staging volume, as a redeploy does. */
   restart: () => Promise<void>;
   close: () => Promise<void>;
@@ -144,6 +147,8 @@ export interface HarnessOptions {
    * the tests of those retries set them.
    */
   rsRetryDelaysMs?: number[];
+  /** The pauses before each retry of a failed Reviewers' email; a millisecond each by default. */
+  emailRetryDelaysMs?: number[];
 }
 
 export async function startHarness(env: Record<string, string> = {}, opts: HarnessOptions = {}): Promise<Harness> {
@@ -174,6 +179,8 @@ export async function startHarness(env: Record<string, string> = {}, opts: Harne
     RS_TIMEOUT_MS: "500",
     RS_UPLOADER_USER: FAKE_RS_USER,
     RS_UPLOADER_API_KEY: FAKE_RS_KEY,
+    // The Reviewers' email is off unless a test turns it on, with its own fake relay (testing/fake-smtp.ts).
+    REVIEWER_EMAIL_PAUSED: "true",
     ...env,
   });
   let skew = 0;
@@ -187,6 +194,9 @@ export async function startHarness(env: Record<string, string> = {}, opts: Harne
       // Real time, moved on by `advance`, so the times of files on staging still compare.
       now: () => Date.now() + skew,
       stagingStats: async (dir) => h.volume ?? statVolume(dir),
+      // Only ever a fake relay here, with its own certificate.
+      smtpTls: { rejectUnauthorized: false },
+      emailRetryDelaysMs: opts.emailRetryDelaysMs ?? [1, 1, 1],
     });
     await new Promise<void>((resolve) => service.listen(0, "127.0.0.1", resolve));
     await service.ready;
@@ -209,6 +219,7 @@ export async function startHarness(env: Record<string, string> = {}, opts: Harne
       skew += ms;
     },
     sweep: () => service.sweep(),
+    notifier: () => service.notifier,
     restart: async () => {
       await stop();
       await start();

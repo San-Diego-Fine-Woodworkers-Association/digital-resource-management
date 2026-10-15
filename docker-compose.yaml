@@ -214,6 +214,19 @@ services:
       - RATE_USER_BURST=${RATE_USER_BURST:-300}
       - RATE_IP_PER_MINUTE=${RATE_IP_PER_MINUTE:-1200}
       - RATE_IP_BURST=${RATE_IP_BURST:-600}
+      # The Reviewers' email (#61, ADR 0006): one per Submission, from
+      # no-reply@ to the reviewers' Group through the Workspace SMTP relay
+      # (STARTTLS required, no SMTP auth: the relay trusts this server's IP).
+      # Sent as partial after REVIEWER_EMAIL_STALL_MINUTES with nothing
+      # arriving. REVIEWER_EMAIL_PAUSED is its kill switch: anything but
+      # false/0/no/off schedules and sends nothing.
+      - REVIEWER_EMAIL_PAUSED=${REVIEWER_EMAIL_PAUSED:-false}
+      - SMTP_HOST=${SMTP_HOST:-smtp-relay.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_EHLO_NAME=${SMTP_EHLO_NAME:-media.sdfwa.org}
+      - REVIEWER_EMAIL_FROM=${REVIEWER_EMAIL_FROM:-no-reply@sdfwa.org}
+      - REVIEWER_EMAIL_TO=${REVIEWER_EMAIL_TO:-media-reviewers@sdfwa.org}
+      - REVIEWER_EMAIL_STALL_MINUTES=${REVIEWER_EMAIL_STALL_MINUTES:-30}
     volumes:
       # The dedicated staging volume (ADR 0004, issue #35), owned by
       # 10001:10001 on the host. Required: there is deliberately no default,

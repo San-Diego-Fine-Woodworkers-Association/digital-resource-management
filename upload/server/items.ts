@@ -57,6 +57,7 @@ import { checkFile, type MediaKind, type Refusal } from "../shared/media.ts";
 import type { Config } from "./config.ts";
 import { detectFile } from "./filetype.ts";
 import { fileName, originalFileName } from "./naming.ts";
+import type { Notifier } from "./notify.ts";
 import type { LiveOptions } from "./options.ts";
 import { ResourceSpaceError, type ResourceSpace } from "./resourcespace.ts";
 import type { SessionUser } from "./session.ts";
@@ -139,6 +140,8 @@ export function createItems(
     rs: ResourceSpace;
     options: LiveOptions;
     log: (message: string, fields?: Record<string, unknown>) => void;
+    /** Told as each hand-off works and when an Item is in, for the Reviewers' email (#61). */
+    notifier?: Pick<Notifier, "progress" | "itemSent">;
     /** The pause before the first read-back retry; it grows with each one. */
     retryDelayMs?: number;
     /** The pauses before trying ResourceSpace again after a failure it answered with. */
@@ -184,7 +187,11 @@ export function createItems(
     const { user } = submitter;
     let record = await readRecord(req.uploadId);
     if (record && record.owner !== user.id) return { outcome: "not_found" };
-    if (record?.sent) return { outcome: "sent", record };
+    if (record?.sent) {
+      // Told again: harmless, and it covers a stop between the two.
+      await deps.notifier?.itemSent(record.submissionId, req.uploadId, record.kind);
+      return { outcome: "sent", record };
+    }
 
     const upload = await uploads.find(req.uploadId, user);
     if (!upload) return { outcome: "not_found" };
@@ -225,6 +232,8 @@ export function createItems(
     }
 
     for (let attempt = 0; ; attempt++) {
+      // A hand-off under way is progress: a long video's previews take minutes.
+      deps.notifier?.progress(record.submissionId);
       try {
         await toResourceSpace(upload, record, details, submission, submitter);
         break;
@@ -240,6 +249,7 @@ export function createItems(
     }
 
     await uploads.remove(upload.id, { sent: true });
+    await deps.notifier?.itemSent(record.submissionId, upload.id, record.kind);
     return { outcome: "sent", record };
   }
 

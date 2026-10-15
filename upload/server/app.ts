@@ -7,6 +7,7 @@
 //   /upload/api/...        the narrow API; session re-checked on every call
 //     GET /options         the live choices for the list fields (options.ts)
 //     POST /submissions    start a Submission with the Step 2 answers and any Item's own (Step 3): its id goes on every upload (submissions.ts)
+//     POST /submissions/<id>/finished   the page finished with some not sent: the Reviewers' email goes now (notify.ts)
 //     /files, /files/<id>  tus: each photo or video arrives in chunks (uploads.ts)
 //     POST /items          hand an arrived one to ResourceSpace (items.ts)
 //     GET /items/<id>      where that hand-off has got to; the page polls it
@@ -21,7 +22,11 @@
 // and the staging cap (staging.ts); no new Submission or upload is taken
 // while ResourceSpace is not answering; and staging is swept at startup and
 // every hour.
+//
+// The Reviewers are told about each Submission by one email (notify.ts,
+// #61). Nothing about it ever changes what the member sees.
 import http from "node:http";
+import type tls from "node:tls";
 import { readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
@@ -32,10 +37,12 @@ import { checkHealth, createReachability } from "./health.ts";
 import { checkDetails, checkItems, type Options } from "../shared/details.ts";
 import { createItems, type HandOffRequest, type HandOffResult } from "./items.ts";
 import { rightsRecord } from "./naming.ts";
+import { createNotifier, pausedNotifier, type Notifier } from "./notify.ts";
 import { createLiveOptions } from "./options.ts";
 import { createQuotas } from "./quotas.ts";
 import { addressKey, clientIp, createRateLimiter } from "./ratelimit.ts";
 import { createResourceSpace } from "./resourcespace.ts";
+import { createMailer, type Mailer } from "./reviewer-email.ts";
 import { checkSession, displayName, isEntitled, type Session, type SessionUser } from "./session.ts";
 import { createStaging, type SweepReport, type VolumeStatsOf } from "./staging.ts";
 import { createSubmissions } from "./submissions.ts";
@@ -53,6 +60,12 @@ export interface ServiceOptions {
   now?: () => number;
   /** How full the staging volume is; tests fake it. */
   stagingStats?: VolumeStatsOf;
+  /** Sends the Reviewers' email; tests replace it. By default, the SMTP relay in the config. */
+  mailer?: Mailer;
+  /** TLS options for the relay; tests trust their fake's own certificate. */
+  smtpTls?: tls.ConnectionOptions;
+  /** The pauses before each retry of a failed email (notify.ts); tests shorten them. */
+  emailRetryDelaysMs?: number[];
 }
 
 export interface Service extends http.Server {
@@ -60,6 +73,8 @@ export interface Service extends http.Server {
   ready: Promise<void>;
   /** Sweeps staging now (it also runs every hour). */
   sweep(): Promise<SweepReport>;
+  /** The Reviewers' email (notify.ts); tests check and wait on it. */
+  notifier: Notifier;
 }
 
 const SWEEP_EVERY_MS = 60 * 60 * 1000;
@@ -212,13 +227,27 @@ export function createService(config: Config, options: ServiceOptions = {}): Ser
   const perUser = createRateLimiter(config.rateLimits.user, now);
   const perAddress = createRateLimiter(config.rateLimits.ip, now);
   const submissions = createSubmissions(config.limits, { dir: config.stagingDir, now });
-  const uploads = createUploads(config, submissions, { staging, quotas });
+  const notifier = config.reviewerEmail.paused
+    ? pausedNotifier
+    : createNotifier({
+        dir: config.stagingDir,
+        stallMs: config.reviewerEmail.stallMs,
+        publicBaseUrl: config.publicBaseUrl,
+        mailer: options.mailer ?? createMailer(config.reviewerEmail, { tls: options.smtpTls }),
+        audit,
+        readRecord: (id, owner) => submissions.record(id, owner),
+        log,
+        now,
+        retryDelaysMs: options.emailRetryDelaysMs,
+      });
+  const uploads = createUploads(config, submissions, { staging, quotas, onProgress: (id) => notifier.progress(id) });
   const items = createItems(config, {
     uploads,
     submissions,
     rs,
     options: liveOptions,
     log,
+    notifier,
     retryDelayMs: options.readBackRetryDelayMs,
     rsRetryDelaysMs: options.rsRetryDelaysMs,
     now: () => new Date(now()),
@@ -229,13 +258,20 @@ export function createService(config: Config, options: ServiceOptions = {}): Ser
     staging.sweep({
       startup,
       inUse: (id) => submissions.inUse(id),
+      pending: (id) => notifier.pending(id),
       onRemoved: (u) => {
         quotas.removed(u.id);
         submissions.release(u.submissionId, u.id);
       },
     });
-  // After a restart: clear what was left, and count what stays against its member again.
-  const ready = sweep(true).then(
+  // After a restart: re-arm the Reviewers' emails still to go (before the
+  // sweep, which keeps their records), clear what was left, and count what
+  // stays against its member again.
+  const ready = notifier
+    .load()
+    .catch((err: unknown) => log("could not read back the reviewer emails still to send", { error: err instanceof Error ? err.message : String(err) }))
+    .then(() => sweep(true))
+    .then(
     (report) => {
       for (const u of report.uploads) quotas.restore(u.owner, u.id, u.size, u.offset);
     },
@@ -371,6 +407,7 @@ export function createService(config: Config, options: ServiceOptions = {}): Ser
     const isFiles = url.pathname === FILES_PATH || url.pathname.startsWith(`${FILES_PATH}/`);
     const isItems = route === "/items";
     const isSubmissions = route === "/submissions";
+    const finishedOf = /^\/submissions\/([^/]+)\/finished$/.exec(route)?.[1];
     const isOptions = route === "/options";
     if (route.startsWith("/items/") && (method === "GET" || method === "HEAD")) {
       const status = await items.status(route.slice("/items/".length), s.user);
@@ -398,6 +435,7 @@ export function createService(config: Config, options: ServiceOptions = {}): Ser
     }
     if (isItems && method === "POST") return handOff(req, s.user, answer, record);
     if (isSubmissions && method === "POST") return startSubmission(req, s.user, answer);
+    if (finishedOf !== undefined && method === "POST") return finishedSubmission(req, finishedOf, s.user, answer);
     if (isOptions && (method === "GET" || method === "HEAD")) return sendOptions(answer, s.user);
     return answer(404, { error: "not_found" }, "not_found", s.user);
   }
@@ -479,7 +517,34 @@ export function createService(config: Config, options: ServiceOptions = {}): Ser
       rights: rightsRecord(new Date()),
     });
     const submissionId = record.submissionId;
+    // The Reviewers' email is scheduled now (#61). Never in the member's way.
+    try {
+      const name = await displayName(req.headers.cookie ?? "", user, authOpts);
+      await notifier.started(record, { name, email: user.email });
+    } catch (err) {
+      log("could not schedule the reviewer email", { submissionId, error: err instanceof Error ? err.message : String(err) });
+    }
     return answer(201, { submissionId }, "submission_started", user, {}, { submissionId });
+  }
+
+  /**
+   * The page reached "Most of your photos are in" (#58), or the thank-you:
+   * the Reviewers' email goes now, as partial if some are not in (#61). Only
+   * the member who started the Submission may say so. Best-effort on the
+   * page's side: it never waits for or shows the answer. JSON only (the body
+   * is ignored), so other sites cannot send it.
+   */
+  async function finishedSubmission(req: http.IncomingMessage, submissionId: string, user: SessionUser, answer: Answer) {
+    try {
+      await readJson(req);
+    } catch (err) {
+      const status = err instanceof BodyError ? err.status : 400;
+      return answer(status, { error: "invalid" }, "invalid", user);
+    }
+    if ((await notifier.finished(submissionId, user.id)) === "not_found") {
+      return answer(404, { error: "not_found" }, "not_found", user);
+    }
+    return answer(202, { status: "noted" }, "finished", user, {}, { submissionId });
   }
 
   type RecordAudit = (outcome: string, user?: SessionUser, extra?: Partial<AuditEvent>) => void;
@@ -628,6 +693,9 @@ export function createService(config: Config, options: ServiceOptions = {}): Ser
     sweep().catch((err: unknown) => log("staging sweep failed", { error: err instanceof Error ? err.message : String(err) }));
   }, SWEEP_EVERY_MS);
   timer.unref();
-  server.on("close", () => clearInterval(timer));
-  return Object.assign(server, { ready, sweep: () => sweep() });
+  server.on("close", () => {
+    clearInterval(timer);
+    notifier.close();
+  });
+  return Object.assign(server, { ready, sweep: () => sweep(), notifier });
 }

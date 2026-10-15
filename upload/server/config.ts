@@ -63,6 +63,25 @@ export interface Config {
   quotas: Quotas;
   /** How many API requests a member, and an address, may make (#23, ratelimit.ts). */
   rateLimits: { user: RateLimit; ip: RateLimit };
+  /** The one email per Submission to the Reviewers (#61, ADR 0006). */
+  reviewerEmail: ReviewerEmail;
+}
+
+/**
+ * Through the Google Workspace SMTP relay, which trusts the server's IP:
+ * STARTTLS required, no SMTP authentication (ADR 0006, docs/host-setup.md).
+ */
+export interface ReviewerEmail {
+  /** Nothing is scheduled or sent while paused. */
+  paused: boolean;
+  smtpHost: string;
+  smtpPort: number;
+  /** The name the service gives itself in EHLO. */
+  ehloName: string;
+  from: string;
+  to: string;
+  /** Sent as partial after this long with nothing arriving (the deadline slides with each chunk and Item). */
+  stallMs: number;
 }
 
 export interface Quotas {
@@ -140,6 +159,22 @@ function int(env: Env, key: string, fallback: number, min: number, max: number):
   return n;
 }
 
+/** A bare email address: nothing that could make a second header or a second address. */
+function address(env: Env, key: string, fallback: string): string {
+  const raw = (env[key] ?? "").trim() || fallback;
+  if (!/^[^\s@<>",;:()\[\]\\]+@[A-Za-z0-9.-]+$/.test(raw)) {
+    throw new Error(`${key} must be one email address, got ${JSON.stringify(raw)}`);
+  }
+  return raw;
+}
+
+/** A host name: letters, digits, dots and hyphens only. */
+function hostName(env: Env, key: string, fallback: string): string {
+  const raw = (env[key] ?? "").trim() || fallback;
+  if (!/^[A-Za-z0-9.-]+$/.test(raw)) throw new Error(`${key} must be a host name, got ${JSON.stringify(raw)}`);
+  return raw;
+}
+
 /** Off only for an explicit "off" value: a typo leaves the kill switch on. */
 function killSwitch(raw: string | undefined): boolean {
   const v = (raw ?? "").trim().toLowerCase();
@@ -191,6 +226,15 @@ export function loadConfig(env: Env): Config {
         perMinute: int(env, "RATE_IP_PER_MINUTE", RATE_LIMITS.ip.perMinute, 1, 100_000),
         burst: int(env, "RATE_IP_BURST", RATE_LIMITS.ip.burst, 1, 100_000),
       },
+    },
+    reviewerEmail: {
+      paused: killSwitch(env.REVIEWER_EMAIL_PAUSED),
+      smtpHost: hostName(env, "SMTP_HOST", "smtp-relay.gmail.com"),
+      smtpPort: int(env, "SMTP_PORT", 587, 1, 65535),
+      ehloName: hostName(env, "SMTP_EHLO_NAME", "media.sdfwa.org"),
+      from: address(env, "REVIEWER_EMAIL_FROM", "no-reply@sdfwa.org"),
+      to: address(env, "REVIEWER_EMAIL_TO", "media-reviewers@sdfwa.org"),
+      stallMs: int(env, "REVIEWER_EMAIL_STALL_MINUTES", 30, 1, 24 * 60) * 60_000,
     },
   };
 }
