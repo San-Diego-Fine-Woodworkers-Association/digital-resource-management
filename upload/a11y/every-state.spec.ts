@@ -131,7 +131,7 @@ test.describe("sending", () => {
     for (const text of [
       "✓ Sent",
       "Couldn't save this one",
-      /^Can't be added: /,
+      /Can't be added: /,
       "Connection dropped. Trying again…",
       "Finishing up… (videos can take a few minutes)",
       "Sending…",

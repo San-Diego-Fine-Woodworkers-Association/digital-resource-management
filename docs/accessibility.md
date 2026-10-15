@@ -56,8 +56,8 @@ Checked on 2026-10-14 against `@sdwa/components` 0.4.1 and `@sdwa/tokens` 0.4.0.
 | Reduced motion | Scripted: with "reduce motion" set, nothing on the page animates (the Finishing up bar's pulse and the bar's growth stop); without it, the pulse runs, so the check is meaningful. Nothing else on the page moves. | **Pass** |
 | 320 px wide, no sideways scrolling | Scripted on 10 screens, including the gallery, both dialogs, the sending list with every kind of line, and long camera file names | **Pass** after the fixes below |
 | 200% text | Scripted as a browser text size of double (the page's root size is now a percentage of it), at 390 px, on the same 10 screens | **Pass** after the fixes below. A phone's own text setting still needs a look (below). |
-| Status never relies on colour alone | Scripted: with every colour removed, each Item's line still says what it is, and no two states read alike; the Changed badge is a word (and in the tile's name); the step bar is backed by "Step n of 4"; the required star by the legend and the Still-needed line. | **Pass**. See question 1 about icons. |
-| Touch targets at least 48 px | Scripted: every control on the same 10 screens and an open list of choices is at least 48 × 48 px | **Pass**, except "Sign out" in the header, a link inside a sentence (WCAG's inline exception). See question 2. |
+| Status uses an icon and words, never colour alone | Scripted: with every colour removed, each Item's line still says what it is, and no two states read alike; every problem line (Connection trouble, Waiting for your connection, Couldn't save, Can't be added, busy), each row of Most of your photos are in, and the busy, offline and signed-out notices carry a ⚠ (hidden from screen readers; the words say it), Sent its ✓, the lapsed-membership notice the design system's icon by its title; the Changed badge is a word (and in the tile's name); the step bar is backed by "Step n of 4"; the required star by the legend and the Still-needed line. | **Pass** |
+| Touch targets at least 48 px | Scripted: every control on the same 10 screens and an open list of choices is at least 48 × 48 px | **Pass**, except "Sign out" in the header, a link inside a sentence (WCAG's inline exception), left as it is by decision on #86. |
 | Contrast re-measured with the current tokens | Scripted: the browser draws each pair (so tints are composited as shown) and the ratio is computed; the text pairs must pass | Table below |
 
 ### Contrast (light theme, tokens 0.4.0)
@@ -101,7 +101,11 @@ before the design-system fixes of #39.
    "We couldn't add some files" could not break; and on "Most of your photos are in" the
    picture and the words could not fit side by side. The name now breaks anywhere, and the
    words go under the picture when they don't fit.
-6. **The member's own text size was ignored.** The page set its root size as `18px`, which
+6. **Problems had no icon** (#31: "an icon and words"). Each problem line, each row of Most
+   of your photos are in, and the title-less busy, offline and signed-out notices now start
+   with a ⚠, drawn inline as text like Sent's ✓ (with U+FE0E, so phones don't draw a colour
+   emoji) and hidden from screen readers. Decided on #86.
+7. **The member's own text size was ignored.** The page set its root size as `18px`, which
    overrides a browser's text size setting. It is now `112.5%`: 18 px at the usual setting, and
    larger when the member asks for larger.
 
@@ -112,8 +116,8 @@ before the design-system fixes of #39.
    `text-foreground` for the body (the title already is), and inherit the text size from the
    field size (`text-base`/`text-lg` at `large`).
 2. **`Notification`: no icon without a title.** The variant's icon is drawn only next to a
-   title, so the offline, busy and signed-out notices are words and a tint only. Suggested
-   fix: draw the icon at the start of the body when there is no title.
+   title, so the page draws its own ⚠ in the offline, busy and signed-out notices. Suggested
+   fix: draw the icon at the start of the body when there is no title (the page's ⚠ can then go).
 3. **`Notification`: may not be announced when it appears.** It renders `role="status"`
    (`role="alert"` for errors) together with its message, and some screen readers announce
    only changes to a live region that is already on the page. Suggested fix: document that the
@@ -150,10 +154,8 @@ desktop Chrome and Safari. (CI runs only Chromium; WebKit, iOS and Android are n
 - [ ] **Reduce Motion** on the phone: Finishing up's bar should stop pulsing.
 - [ ] The observation sessions and the pilot on #31 (5 to 8 members aged 60 and over).
 
-## Questions
+## Decided on #86
 
-1. #31 says status uses "an icon and words". The words are always there, and Sent has its ✓,
-   but Couldn't save, Can't be added, Connection trouble and the notices without a title have
-   no icon. Add one (a ⚠ before the problem lines, for example), or are the words enough?
-2. "Sign out" in the header is a link in a sentence, about 22 px tall. WCAG exempts it, but
-   #31 asks for 48 px targets. Leave it, or make it a full-size button-like link?
+- Problem lines and title-less notices get a ⚠ as well as their words (fix 6).
+- "Sign out" in the header stays an inline link.
+- Narrow galleries stay at 2 columns below 340 px, pending a design review.

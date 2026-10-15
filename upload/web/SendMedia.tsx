@@ -34,7 +34,7 @@ import {
 } from "./itemState.ts";
 import type { Sender, SignInTrouble, Submission } from "./send.ts";
 import { useStepHistory } from "./stepHistory.ts";
-import { StepFrame } from "./ui.tsx";
+import { Problem, StepFrame } from "./ui.tsx";
 
 /**
  * What the picker offers: JPEG, PNG, HEIC/HEIF, MP4 and MOV (#18). This only
@@ -434,11 +434,15 @@ export function SendMedia({ sender, account }: { sender: Sender; account?: Accou
       <SignInNotice trouble={signIn} account={account} />
     ) : step === "sending" && offline ? (
       <Notification variant="warning">
-        <p className="text-lg text-foreground">{copy.problems.offline}</p>
+        <p className="text-lg text-foreground">
+          <Problem>{copy.problems.offline}</Problem>
+        </p>
       </Notification>
     ) : step === "sending" && busy ? (
       <Notification variant="info">
-        <p className="text-lg text-foreground">{copy.problems.busy}</p>
+        <p className="text-lg text-foreground">
+          <Problem>{copy.problems.busy}</Problem>
+        </p>
       </Notification>
     ) : null;
 
@@ -589,7 +593,9 @@ function SignInNotice({ trouble, account }: { trouble: SignInTrouble; account?: 
           </Link>
         }
       >
-        <p className="text-lg text-foreground">{copy.problems.signedOut}</p>
+        <p className="text-lg text-foreground">
+          <Problem>{copy.problems.signedOut}</Problem>
+        </p>
       </Notification>
     );
   }
@@ -643,6 +649,15 @@ function labelOf(item: Chosen, state: ItemState): string {
 /** A state the member needs to see as a problem (in words first; the colour only adds to them). */
 const isProblem = (state: ItemState) => ["failed", "refused", "stalled"].includes(state.status);
 
+/**
+ * A line that says something went wrong, so it carries the ⚠ (#31, #62):
+ * those above, a busy service once the page stops trying, and Connection
+ * trouble (but not while busy: then the line is Waiting, and the page's
+ * notice says why).
+ */
+const hasProblemIcon = (state: ItemState) =>
+  isProblem(state) || state.status === "busy" || (state.status === "connection" && !state.busy);
+
 /** One Item while sending: its state in words, and its one way forward when it needs one. */
 function ItemRow({
   item,
@@ -664,7 +679,7 @@ function ItemRow({
         <p className="truncate text-sm text-muted-foreground">{item.file.name}</p>
         {/* Only the state is announced, not every percent (#31). */}
         <p role="status" className={`text-base font-medium ${problem ? "text-destructive" : ""}`}>
-          {label}
+          {hasProblemIcon(state) ? <Problem>{label}</Problem> : label}
         </p>
         {state.status === "sending" && <ProgressBar value={state.percent} aria-label={item.file.name} />}
         {/* Still moving while ResourceSpace makes a video's previews, so it never looks stuck (#55). */}
@@ -719,7 +734,9 @@ function SomeNotSent({
               <div className="flex min-w-[8rem] flex-1 flex-col gap-1">
                 <p className="truncate text-base">{item.file.name}</p>
                 {/* Not red here: on this screen's tint it is too faint (#62), and every one listed is a problem. */}
-                <p className="text-base font-medium">{labelOf(item, state)}</p>
+                <p className="text-base font-medium">
+                  <Problem>{labelOf(item, state)}</Problem>
+                </p>
               </div>
             </li>
           );

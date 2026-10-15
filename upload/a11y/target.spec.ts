@@ -14,6 +14,22 @@ const NOT_SAVED: Answer = { status: 502, json: { error: "not_saved" } };
 const focused = (page: Page) =>
   page.evaluate(() => ({ tag: document.activeElement?.tagName, text: document.activeElement?.textContent?.trim() }));
 
+/**
+ * Each element's words as a screen reader hears them (without what is
+ * aria-hidden), and the mark drawn before them that it doesn't hear.
+ */
+const heardAndMark = (page: Page, selector: string) =>
+  page.$$eval(selector, (els) =>
+    els.map((el) => {
+      const words = el.cloneNode(true) as HTMLElement;
+      for (const hidden of words.querySelectorAll("[aria-hidden]")) hidden.remove();
+      return {
+        words: words.textContent?.trim(),
+        mark: [...el.querySelectorAll("[aria-hidden]")].map((h) => h.textContent?.trim()).join("") || undefined,
+      };
+    }),
+  );
+
 test.describe("focus moves to the step heading on each step change", () => {
   test("forward through every step, back with the page's Back and the browser's, to the end", async ({ page }) => {
     await openPage(page, BOOTS.app);
@@ -84,7 +100,11 @@ test.describe("screen readers hear each Item's state, not every percent", () => 
       );
       const inLive = (el: Element) => live.some((r) => r.contains(el));
       return {
-        live: live.map((el) => ({ role: el.getAttribute("role"), text: el.textContent?.trim() })),
+        live: live.map((el) => {
+          const heard = el.cloneNode(true) as HTMLElement;
+          for (const hidden of heard.querySelectorAll("[aria-hidden]")) hidden.remove();
+          return { role: el.getAttribute("role"), text: heard.textContent?.trim() };
+        }),
         barsInLive: [...document.querySelectorAll('[role="progressbar"]')].filter(inLive).length,
         percentInLive: live.filter((el) => /%/.test(el.textContent ?? "")).length,
         bars: [...document.querySelectorAll('[role="progressbar"]')].map((el) => ({
@@ -306,11 +326,20 @@ test.describe("touch targets are at least 48 px", () => {
 });
 
 test.describe("status never relies on colour alone", () => {
-  test("every Item state reads differently in words, and Changed is a word on the tile and in its name", async ({ page }) => {
+  test("every Item state reads differently in words, each problem has its ⚠, and Changed is a word on the tile and in its name", async ({ page }) => {
     await openPage(page, BOOTS.app, {
-      handOff: (name) => ({ "sent.png": SENT, "save.png": NOT_SAVED, "refuse.png": { status: 422, json: { error: "wrong_type" } } })[name] ?? "hold",
+      handOff: (name) =>
+        ({ "sent.png": SENT, "save.png": NOT_SAVED, "refuse.png": { status: 422, json: { error: "wrong_type" } }, "drop.png": "drop" } as Record<string, Answer>)[
+          name
+        ] ?? "hold",
     });
-    await choose(page, [await photo(page, "sent.png"), await photo(page, "save.png", 0), await photo(page, "refuse.png", 200), await photo(page, "wait.png", 90)]);
+    await choose(page, [
+      await photo(page, "sent.png"),
+      await photo(page, "save.png", 0),
+      await photo(page, "refuse.png", 200),
+      await photo(page, "drop.png", 150),
+      await photo(page, "wait.png", 90),
+    ]);
     await describeAll(page);
     await toChange(page);
     await page.getByRole("button", { name: "Change details for save.png" }).click();
@@ -320,13 +349,70 @@ test.describe("status never relies on colour alone", () => {
     await expect(page.getByRole("listitem").filter({ hasText: "Changed" })).toHaveCount(1);
     await send(page);
     await expect(page.getByText("Couldn't save this one")).toBeVisible();
-    // With every colour taken away, each line still says what it is.
+    await expect(page.getByText("Connection dropped. Trying again…")).toBeVisible();
+    // With every colour taken away, each line still says what it is, in words and a mark.
     await page.addStyleTag({ content: "* { color: black !important; background: white !important; border-color: black !important; }" });
-    const lines = await page.getByRole("status").allTextContents();
-    expect(lines).toEqual(["✓ Sent", "Couldn't save this one", expect.stringMatching(/^Can't be added: /), "Finishing up…"]);
-    expect(new Set(lines).size).toBe(lines.length);
+    const lines = await heardAndMark(page, '[role="status"]');
+    expect(lines).toEqual([
+      { words: "✓ Sent", mark: undefined },
+      { words: "Couldn't save this one", mark: "⚠\uFE0E" },
+      { words: expect.stringMatching(/^Can't be added: /), mark: "⚠\uFE0E" },
+      { words: "Connection dropped. Trying again…", mark: "⚠\uFE0E" },
+      { words: "Finishing up…", mark: undefined },
+    ]);
+    expect(new Set(lines.map((l) => l.words)).size).toBe(lines.length);
+  });
+
+  test("the busy and Waiting for your connection lines, and Most of your photos are in, have their ⚠", async ({ page }) => {
+    await page.clock.install();
+    await openPage(page, BOOTS.app, { handOff: (name) => (name === "busy.png" ? { status: 503, json: { error: "busy" } } : name === "sent.png" ? SENT : "drop") });
+    await choose(page, [await photo(page, "busy.png"), await photo(page, "stall.png", 200), await photo(page, "sent.png", 90)]);
+    await describeAll(page);
+    await toChange(page);
+    await send(page);
+    for (let i = 0; i < 30 && !(await page.getByRole("heading", { name: "Most of your photos are in." }).isVisible()); i++) {
+      await page.clock.runFor(61_000);
+    }
+    const rows = await heardAndMark(page, "section li p.font-medium");
+    expect(rows).toEqual([
+      { words: "We're busy right now. Please try again in a few minutes.", mark: "⚠\uFE0E" },
+      { words: "Waiting for your connection", mark: "⚠\uFE0E" },
+    ]);
+  });
+
+  test("the notices without a title have their ⚠: offline, busy, signed out", async ({ page, context }) => {
+    let answer: Answer = { status: 503, json: { error: "busy" } };
+    await openPage(page, BOOTS.app, { handOff: () => answer });
+    await choose(page, [await photo(page, "IMG_0001.png")]);
+    await describeAll(page);
+    await toChange(page);
+    await send(page);
+    const notice = () => heardAndMark(page, '[data-slot="notification"]');
+    await expect(page.getByText("We're busy right now. We'll keep trying for a few minutes.")).toBeVisible();
+    expect(await notice()).toEqual([{ words: "We're busy right now. We'll keep trying for a few minutes.", mark: "⚠\uFE0E" }]);
+
+    await context.setOffline(true);
+    await expect(page.getByText("No internet connection.")).toBeVisible();
+    expect(await notice()).toEqual([{ words: expect.stringMatching(/^No internet connection\./), mark: "⚠\uFE0E" }]);
+
+    answer = { status: 401, json: { error: "signed_out" } };
+    await context.setOffline(false);
+    await expect(page.getByRole("link", { name: "Sign in again" })).toBeVisible({ timeout: 10_000 });
+    expect(await notice()).toEqual([{ words: expect.stringMatching(/^You've been signed out\..*Sign in again$/), mark: "⚠\uFE0E" }]);
+  });
+
+  test("the lapsed-membership notice has the design system's ⚠ by its title", async ({ page }) => {
+    await openPage(page, BOOTS.app, { handOff: () => ({ status: 403, json: { error: "not_member" } }) });
+    await choose(page, [await photo(page, "IMG_0001.png")]);
+    await describeAll(page);
+    await toChange(page);
+    await send(page);
+    const notice = page.locator('[data-slot="notification"]');
+    await expect(notice.getByText("This page is for current SDFWA members")).toBeVisible();
+    await expect(notice.locator('svg[aria-hidden="true"]')).toHaveCount(1);
   });
 });
+
 
 test.describe("contrast, measured from the tokens as drawn", () => {
   /**
