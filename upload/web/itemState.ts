@@ -16,13 +16,15 @@
 // This is only the rules; SendMedia.tsx keeps the timers and the queue. Every
 // Item has its own state, so one that fails never holds up the rest.
 //
-// Built so #59 can add to it without changing what is here: going offline
-// can stop the timers (a `pause` event that holds every Connection trouble
-// Item where it is), coming back online or to the foreground can make every
-// one due at once (a `resume` event, the same as Try again for each), a
-// signed-out session can hold the queue the way `canStart` already does for
-// a step that is not showing, and "busy" can take the same schedule as
-// Connection trouble by mapping it to a `connection` result.
+// The interruptions (#59) add to it: a busy service takes the same schedule
+// as Connection trouble (marked `busy`, so the page can say so and hold the
+// rest of the queue), and when the schedule runs out it is Busy, with Try
+// again. Signed out or no longer a member puts the Item back to Waiting: the
+// page holds the queue until the member is back, then it resumes where it
+// stopped. Coming back online or to the foreground is `resume`: every Item in
+// Connection trouble or Waiting for your connection is due at once. While
+// the page is held (offline, signed out) it simply starts nothing and runs no
+// timers, so there is no `pause` event.
 import type { Refusal } from "../shared/media.ts";
 import type { SendResult } from "./send.ts";
 
@@ -41,9 +43,10 @@ export type ItemState =
   /**
    * Connection trouble: `tries` is which automatic try comes next (1 for the
    * first) since the service last answered. "pausing" until that try is due, "due" while it waits for
-   * a free place in the queue, "trying" while that try runs.
+   * a free place in the queue, "trying" while that try runs. `busy` when
+   * the service said it is busy, not the connection (#59).
    */
-  | { status: "connection"; tries: number; phase: "pausing" | "due" | "trying" }
+  | { status: "connection"; tries: number; phase: "pausing" | "due" | "trying"; busy?: true }
   /** Connection trouble after every automatic try: Waiting for your connection. */
   | { status: "stalled" }
   /** Couldn't save. */
@@ -64,7 +67,9 @@ export type ItemEvent =
   /** The pause before the next automatic try is over. */
   | { type: "retryDue" }
   /** The member pressed Try again. */
-  | { type: "tryAgain" };
+  | { type: "tryAgain" }
+  /** Back online or in the foreground (#59): every automatic try is due now. */
+  | { type: "resume" };
 
 export const WAITING: ItemState = { status: "waiting" };
 
@@ -91,14 +96,19 @@ export function nextState(state: ItemState, event: ItemEvent): ItemState {
       if (result.ok) return { status: "sent" };
       switch (result.reason) {
         case "connection":
+        case "busy": {
           // The first trouble starts the schedule; each failed try moves along it.
-          if (!isTrying(state)) return { status: "connection", tries: 1, phase: "pausing" };
-          if (state.tries >= RETRY_DELAYS_MS.length) return { status: "stalled" };
-          return { status: "connection", tries: state.tries + 1, phase: "pausing" };
+          const busy = result.reason === "busy" ? ({ busy: true } as const) : {};
+          if (!isTrying(state)) return { status: "connection", tries: 1, phase: "pausing", ...busy };
+          if (state.tries >= RETRY_DELAYS_MS.length) return result.reason === "busy" ? { status: "busy" } : { status: "stalled" };
+          return { status: "connection", tries: state.tries + 1, phase: "pausing", ...busy };
+        }
+        case "signed_out":
+        case "not_member":
+          // Not this Item's trouble: it waits for the member to be back (#59).
+          return WAITING;
         case "failed":
           return { status: "failed" };
-        case "busy":
-          return { status: "busy" };
         default:
           return { status: "refused", refusal: result.reason };
       }
@@ -110,6 +120,12 @@ export function nextState(state: ItemState, event: ItemEvent): ItemState {
 
     case "tryAgain":
       if (state.status === "failed" || state.status === "stalled" || state.status === "busy") return WAITING;
+      return state;
+
+    case "resume":
+      if (state.status === "connection" && state.phase !== "trying") return { ...state, phase: "due" };
+      // One more try; if it fails it is waiting for the member again.
+      if (state.status === "stalled") return { status: "connection", tries: RETRY_DELAYS_MS.length, phase: "due" };
       return state;
   }
 }
@@ -142,4 +158,9 @@ export function isSettled(state: ItemState): boolean {
 /** Settled without being sent, and Try again may still send it. */
 export function canTryAgain(state: ItemState): boolean {
   return state.status === "stalled" || state.status === "failed" || state.status === "busy";
+}
+
+/** The service said it is busy and the page is trying again by itself (#59). */
+export function isBusyTrouble(state: ItemState): boolean {
+  return state.status === "connection" && state.busy === true;
 }

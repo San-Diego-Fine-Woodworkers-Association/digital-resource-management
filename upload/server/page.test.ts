@@ -12,6 +12,8 @@ import {
   type Harness,
 } from "./testing/harness.ts";
 
+const SIGNED_IN_URL = `${PUBLIC_BASE_URL}/upload/signed-in`;
+
 let h: Harness;
 afterEach(async () => h?.close());
 
@@ -111,7 +113,43 @@ describe.each([["member"], ["volunteer"]])("signed in with the %s claim", (claim
       screen: "app",
       user: { name: "Pat Member", email: "pat@example.org" },
       signOutUrl: `${h.auth.url}/logout?redirect=${encodeURIComponent(UPLOAD_URL)}`,
+      // For a membership that lapses mid-send (#59).
+      renewUrl: "https://sdfwa.org/sdfwa-membership-levels/",
+      switchAccountUrl: `${h.auth.url}/logout?redirect=${encodeURIComponent(SIGNED_IN_URL)}`,
     });
+  });
+});
+
+describe("signing in again in a new tab (#59)", () => {
+  it("sends a signed-out member to sign in, and back to this tab's page", async () => {
+    h = await startHarness();
+    h.auth.respond = signedOut;
+
+    const res = await get(h, "/upload/signed-in", COOKIE);
+
+    expect(res.status).toBe(302);
+    expect(new URL(res.headers.get("location")!).searchParams.get("redirect")).toBe(SIGNED_IN_URL);
+  });
+
+  it("then says the tab can be closed, even while ResourceSpace is not answering", async () => {
+    h = await startHarness();
+    h.auth.respond = signedInAs({ claims: ["member"] });
+    await h.rs.close();
+
+    const res = await get(h, "/upload/signed-in", COOKIE);
+
+    expect(res.status).toBe(200);
+    expect(bootOf(await res.text())).toEqual({ screen: "signed-in" });
+  });
+
+  it("shows the not-a-member page to someone signed in without a membership", async () => {
+    h = await startHarness();
+    h.auth.respond = signedInAs({ claims: [] });
+
+    const res = await get(h, "/upload/signed-in", COOKIE);
+
+    expect(res.status).toBe(403);
+    expect(bootOf(await res.text())).toMatchObject({ screen: "not-member" });
   });
 });
 

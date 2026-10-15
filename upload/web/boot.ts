@@ -25,13 +25,24 @@ export function readBoot(doc: Document): Boot {
   if (!isRecord(raw)) return FALLBACK;
   switch (raw.screen) {
     case "app":
-      return isUser(raw.user) && typeof raw.signOutUrl === "string"
-        ? { screen: "app", user: raw.user, signOutUrl: raw.signOutUrl }
+      return isUser(raw.user) &&
+        typeof raw.signOutUrl === "string" &&
+        typeof raw.renewUrl === "string" &&
+        typeof raw.switchAccountUrl === "string"
+        ? {
+            screen: "app",
+            user: raw.user,
+            signOutUrl: raw.signOutUrl,
+            renewUrl: raw.renewUrl,
+            switchAccountUrl: raw.switchAccountUrl,
+          }
         : FALLBACK;
     case "not-member":
       return isUser(raw.user) && typeof raw.signOutUrl === "string" && typeof raw.renewUrl === "string"
         ? { screen: "not-member", user: raw.user, renewUrl: raw.renewUrl, signOutUrl: raw.signOutUrl }
         : FALLBACK;
+    case "signed-in":
+      return { screen: "signed-in" };
     case "paused":
       return { screen: "paused" };
     default:

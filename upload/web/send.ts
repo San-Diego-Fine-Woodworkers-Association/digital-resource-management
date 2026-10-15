@@ -32,7 +32,19 @@ export type BeginResult =
    * names the Item.
    */
   | { ok: false; reason: "invalid"; problems: (FieldProblem | ItemProblem)[]; options?: Options }
+  /** The session ended, or the membership lapsed, before Send (#59). */
+  | { ok: false; reason: SignInTrouble }
   | { ok: false; reason: "failed" };
+
+/**
+ * The service no longer knows the member (the session ended) or no longer
+ * lets them send (the membership lapsed). Not the file's trouble: the page
+ * holds everything until the member is back (#59).
+ */
+export type SignInTrouble = "signed_out" | "not_member";
+
+/** Who the service says is signed in, when the page asks again (#59). "unknown": no clear answer. */
+export type SessionCheck = "signed_in" | SignInTrouble | "unknown";
 
 export type OptionsResult = { ok: true; options: Options } | { ok: false };
 
@@ -54,9 +66,10 @@ export type SendResult =
    * Submission has no room); sending it again will not help. busy: the
    * service cannot take it just now (#60); trying again later will.
    * connection: no answer, or none from the service itself (#58); trying
-   * again soon should work. failed: anything else; trying again may work.
+   * again soon should work. signed_out, not_member: see SignInTrouble.
+   * failed: anything else; trying again may work.
    */
-  | { ok: false; reason: Refusal | "busy" | "connection" | "failed" };
+  | { ok: false; reason: Refusal | "busy" | "connection" | SignInTrouble | "failed" };
 
 export interface Submission {
   /**
@@ -73,12 +86,15 @@ export interface Sender {
   options(): Promise<OptionsResult>;
   /** A new Submission with these answers: everything sent through it is grouped together. */
   begin(start: Start): Promise<BeginResult>;
+  /** Asks the service again who is signed in: after the member signed in again in another tab (#59). */
+  session(): Promise<SessionCheck>;
 }
 
 const OPTIONS_ENDPOINT = "/upload/api/options";
 const SUBMISSIONS_ENDPOINT = "/upload/api/submissions";
 const FILES_ENDPOINT = "/upload/api/files/";
 const ITEMS_ENDPOINT = "/upload/api/items";
+const SESSION_ENDPOINT = "/upload/api/session";
 
 /** #17: small chunks (5–8 MB) keep each request well inside Traefik's 60 s read timeout. */
 const CHUNK_SIZE = 5 * 1024 * 1024;
@@ -96,10 +112,22 @@ function errorIn(body: unknown): unknown {
   }
 }
 
-/** The service's reason for refusing a file, or that it is busy, from a JSON `{error}` body, if it gave one. */
+/**
+ * The service's reason for refusing a file, or that it is busy, from a JSON
+ * `{error}` body, if it gave one. The kill switch turned on mid-send
+ * ("paused") is busy too: it will be turned off again (#30).
+ */
 function refusalIn(body: unknown): Refusal | "busy" | undefined {
   const error = errorIn(body);
-  return isRefusal(error) ? error : isBusy(error) ? "busy" : undefined;
+  return isRefusal(error) ? error : isBusy(error) || error === "paused" ? "busy" : undefined;
+}
+
+/** The session ended (401) or the membership lapsed (403 "not_member"), from the service itself (#59). */
+function signInTroubleOf(status: number, body: unknown): SignInTrouble | undefined {
+  const error = errorIn(body);
+  if (status === 401 && error === "signed_out") return "signed_out";
+  if (status === 403 && error === "not_member") return "not_member";
+  return undefined;
 }
 
 /**
@@ -110,6 +138,8 @@ function refusalIn(body: unknown): Refusal | "busy" | undefined {
  * restarts); otherwise failed.
  */
 export function failureOf(status: number, body: unknown): Exclude<SendResult, { ok: true }>["reason"] {
+  const trouble = signInTroubleOf(status, body);
+  if (trouble) return trouble;
   const reason = refusalIn(body);
   if (reason) return reason;
   if (typeof errorIn(body) === "string") return "failed";
@@ -147,9 +177,20 @@ export function createSender(): Sender {
             return { ok: false, reason: "invalid", problems: body.problems, options: body.options };
           }
         }
-        return { ok: false, reason: "failed" };
+        const trouble = signInTroubleOf(res.status, await res.text().catch(() => ""));
+        return { ok: false, reason: trouble ?? "failed" };
       } catch {
         return { ok: false, reason: "failed" };
+      }
+    },
+
+    async session() {
+      try {
+        const res = await fetch(SESSION_ENDPOINT, { credentials: "same-origin", cache: "no-store" });
+        if (res.ok) return "signed_in";
+        return signInTroubleOf(res.status, await res.text().catch(() => "")) ?? "unknown";
+      } catch {
+        return "unknown";
       }
     },
   };

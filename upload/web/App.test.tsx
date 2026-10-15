@@ -8,9 +8,11 @@ import { readBoot } from "./boot.ts";
 
 const user = { name: "Pat Member", email: "pat@example.org" };
 const signOutUrl = "https://auth.example.org/logout?redirect=https%3A%2F%2Fmedia.example.org%2Fupload%2F";
+const renewUrl = "https://www.example.org/renew";
+const switchAccountUrl = "https://auth.example.org/logout?redirect=https%3A%2F%2Fmedia.example.org%2Fupload%2Fsigned-in";
 
 describe("a member or volunteer", () => {
-  const boot: Boot = { screen: "app", user, signOutUrl };
+  const boot: Boot = { screen: "app", user, signOutUrl, renewUrl, switchAccountUrl };
 
   it("sees the app shell: who they are and a way to sign out", () => {
     render(<App boot={boot} />);
@@ -79,6 +81,26 @@ describe("when the service cannot take photos right now", () => {
   });
 });
 
+describe("the new tab after signing in again (#59)", () => {
+  it("says the member can close it, and offers nothing to send from it", () => {
+    render(<App boot={{ screen: "signed-in" }} />);
+
+    expect(screen.getByText("You're signed in. You can close this tab.")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("is read from the page", () => {
+    const el = document.createElement("script");
+    el.type = "application/json";
+    el.id = BOOT_ELEMENT_ID;
+    el.textContent = JSON.stringify({ screen: "signed-in" });
+    document.head.append(el);
+
+    expect(readBoot(document)).toEqual({ screen: "signed-in" });
+    el.remove();
+  });
+});
+
 describe("reading what the service sent", () => {
   afterEach(() => document.getElementById(BOOT_ELEMENT_ID)?.remove());
 
@@ -91,16 +113,17 @@ describe("reading what the service sent", () => {
   }
 
   it("reads the screen and user from the page", () => {
-    embed(JSON.stringify({ screen: "app", user, signOutUrl }));
+    embed(JSON.stringify({ screen: "app", user, signOutUrl, renewUrl, switchAccountUrl }));
 
-    expect(readBoot(document)).toEqual({ screen: "app", user, signOutUrl });
+    expect(readBoot(document)).toEqual({ screen: "app", user, signOutUrl, renewUrl, switchAccountUrl });
   });
 
   it.each([
     ["nothing was sent", null],
     ["it is not JSON", "{oops"],
     ["the screen is unknown", JSON.stringify({ screen: "admin" })],
-    ["the app screen has no user", JSON.stringify({ screen: "app", signOutUrl })],
+    ["the app screen has no user", JSON.stringify({ screen: "app", signOutUrl, renewUrl, switchAccountUrl })],
+    ["the app screen has no renewal link", JSON.stringify({ screen: "app", user, signOutUrl, switchAccountUrl })],
   ])("falls back to the temporary-problem screen when %s", (_name, text) => {
     if (text !== null) embed(text);
 

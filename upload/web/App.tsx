@@ -11,6 +11,7 @@ import { Page } from "./ui.tsx";
 const noSender: Sender = {
   options: async () => ({ ok: false }),
   begin: async () => ({ ok: false, reason: "failed" }),
+  session: async () => "unknown",
 };
 
 export function App({ boot, sender = noSender }: { boot: Boot; sender?: Sender }) {
@@ -28,7 +29,10 @@ function screenFor(boot: Boot, sender: Sender) {
     case "app":
       return (
         <Page user={boot.user} signOutUrl={boot.signOutUrl}>
-          <SendMedia sender={sender} />
+          <SendMedia
+            sender={sender}
+            account={{ user: boot.user, renewUrl: boot.renewUrl, switchAccountUrl: boot.switchAccountUrl }}
+          />
         </Page>
       );
     case "not-member":
@@ -45,6 +49,12 @@ function screenFor(boot: Boot, sender: Sender) {
               {copy.notMember.switchAccount}
             </Link>
           </section>
+        </Page>
+      );
+    case "signed-in":
+      return (
+        <Page>
+          <p className="text-lg">{copy.problems.signedInTab}</p>
         </Page>
       );
     case "paused":

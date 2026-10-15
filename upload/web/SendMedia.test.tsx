@@ -2,18 +2,20 @@
 // interface. Choosing many photos and videos at once, the gallery and the
 // limits (#54); describing them all in Step 2 (#56); then Send and
 // thank-you (#53).
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Boot } from "../shared/boot.ts";
 import type { Options } from "../shared/details.ts";
 import { App } from "./App.tsx";
-import type { BeginResult, OptionsResult, SendEvents, SendResult, Sender, Start } from "./send.ts";
+import type { BeginResult, OptionsResult, SendEvents, SendResult, Sender, SessionCheck, Start } from "./send.ts";
 
 const boot: Boot = {
   screen: "app",
   user: { name: "Pat Member", email: "pat@example.org" },
   signOutUrl: "https://auth.example.org/logout",
+  renewUrl: "https://www.example.org/renew",
+  switchAccountUrl: "https://auth.example.org/logout?redirect=signed-in",
 };
 
 /** The club's lists as the fake service gives them; deliberately not production's, so nothing can be hard-coded. */
@@ -38,11 +40,14 @@ interface Call {
  * each Submission starts as asked (or as `beginResults` says, in turn), and
  * each send waits until the test decides how it ends.
  */
-function fakeSender(opts: { options?: () => Promise<OptionsResult>; beginResults?: BeginResult[] } = {}) {
+function fakeSender(
+  opts: { options?: () => Promise<OptionsResult>; beginResults?: BeginResult[]; session?: () => Promise<SessionCheck> } = {},
+) {
   const calls: Call[] = [];
   const starts: Start[] = [];
   let submissions = 0;
   const sender: Sender = {
+    session: opts.session ?? (async () => "signed_in"),
     options: opts.options ?? (async () => ({ ok: true, options: OPTIONS })),
     begin: async (start) => {
       starts.push(start);
@@ -688,28 +693,6 @@ describe("sending", () => {
     expect(starts).toHaveLength(1);
     await act(async () => calls[1]!.finish({ ok: true }));
     expect(screen.getByRole("heading", { name: "Thank you! We have your 1 photo." })).toBeInTheDocument();
-  });
-
-  it("says plainly when the service is busy, not that it failed, and offers Try again (#60)", async () => {
-    const user = userEvent.setup();
-    const { sender, calls } = fakeSender();
-    render(<App boot={boot} sender={sender} />);
-    await pick(user, [photo("a.jpg"), photo("b.jpg")]);
-    await describeAndSend(user);
-
-    await act(async () => calls[0]!.finish({ ok: false, reason: "busy" }));
-    expect(screen.getByText("We're busy right now. Please try again in a few minutes.")).toBeInTheDocument();
-    expect(screen.queryByText("Couldn't save this one")).not.toBeInTheDocument();
-    // The rest carry on.
-    await act(async () => calls[1]!.finish({ ok: true }));
-    expect(screen.getByRole("heading", { name: "Most of your photos are in." })).toBeInTheDocument();
-    expect(screen.getByText("We're busy right now. Please try again in a few minutes.")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Try again" }));
-    expect(calls).toHaveLength(3);
-    expect(calls[2]!.file).toBe(calls[0]!.file);
-    await act(async () => calls[2]!.finish({ ok: true }));
-    expect(screen.getByRole("heading", { name: "Thank you! We have your 2 photos." })).toBeInTheDocument();
   });
 
   it("starts fresh, in a new Submission with empty answers, after the thank-you", async () => {
@@ -1446,7 +1429,7 @@ describe("the end when some were not sent (#58)", () => {
     await describeAndSend(user);
 
     await act(async () => calls[0]!.finish({ ok: false, reason: "failed" }));
-    await act(async () => calls[1]!.finish({ ok: false, reason: "busy" }));
+    await act(async () => calls[1]!.finish({ ok: false, reason: "failed" }));
 
     expect(screen.getByRole("heading", { level: 2, name: "Sending" })).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Try again" })).toHaveLength(2);
@@ -1493,5 +1476,479 @@ describe("the end when some were not sent (#58)", () => {
     expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "I'll do the rest later" }));
     expect(screen.getByRole("heading", { name: "Thank you! We have your 1 photo." })).toBeInTheDocument();
+  });
+});
+
+describe("phone and sign-in interruptions (#59)", () => {
+  let online = true;
+  let visibility: DocumentVisibilityState = "visible";
+  /** Each wake lock the page asked for, in turn. */
+  let locks: { released: boolean; release: () => Promise<void> }[] = [];
+  let wakeLockRequests = 0;
+
+  beforeEach(() => {
+    online = true;
+    visibility = "visible";
+    locks = [];
+    wakeLockRequests = 0;
+    Object.defineProperty(navigator, "onLine", { configurable: true, get: () => online });
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+    Object.defineProperty(navigator, "wakeLock", {
+      configurable: true,
+      value: {
+        request: async () => {
+          wakeLockRequests++;
+          const lock = {
+            released: false,
+            release: async () => {
+              lock.released = true;
+            },
+          };
+          locks.push(lock);
+          return lock;
+        },
+      },
+    });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    // Back to jsdom's own.
+    delete (navigator as { onLine?: boolean }).onLine;
+    delete (document as { visibilityState?: string }).visibilityState;
+    delete (navigator as { wakeLock?: unknown }).wakeLock;
+  });
+
+  const statusOf = (name: string) => within(screen.getByText(name).closest("li")!).getByRole("status");
+  const wait = (ms: number) => act(async () => vi.advanceTimersByTime(ms));
+  const fire = (target: EventTarget, type: string) => act(async () => void target.dispatchEvent(new Event(type)));
+  const goOffline = () => {
+    online = false;
+    return fire(window, "offline");
+  };
+  const goOnline = () => {
+    online = true;
+    return fire(window, "online");
+  };
+  /** The phone puts the page away, then shows it again. */
+  const hide = () => {
+    visibility = "hidden";
+    // The browser lets go of the wake lock whenever the page is hidden.
+    for (const lock of locks) lock.released = true;
+    return fire(document, "visibilitychange");
+  };
+  const show = () => {
+    visibility = "visible";
+    return fire(document, "visibilitychange");
+  };
+  /** Whether leaving the page now would ask first. */
+  const leaveWarns = () => {
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  };
+  const heldLocks = () => locks.filter((l) => !l.released).length;
+
+  async function sendingWithClock(files: File[], opts: Parameters<typeof fakeSender>[0] = {}) {
+    const user = userEvent.setup();
+    const fake = fakeSender(opts);
+    render(<App boot={boot} sender={fake.sender} />);
+    await pick(user, files);
+    await describeAndSend(user);
+    vi.useFakeTimers(CLOCK);
+    return fake;
+  }
+
+  describe("offline", () => {
+    it("holds everything with the banner, and carries on at once when the connection is back", async () => {
+      const { calls } = await sendingWithClock([photo("a.jpg"), photo("b.jpg"), photo("c.jpg"), photo("d.jpg")]);
+      // a.jpg pauses before its next try; c.jpg takes its place.
+      await act(async () => calls[0]!.finish({ ok: false, reason: "connection" }));
+      expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg", "c.jpg"]);
+
+      await goOffline();
+
+      expect(screen.getByText("No internet connection. Your photos will keep going when it comes back.")).toBeInTheDocument();
+      // The ones in flight end as they will; nothing starts in their place, and no automatic try runs.
+      await act(async () => calls[1]!.finish({ ok: true }));
+      await act(async () => calls[2]!.finish({ ok: false, reason: "connection" }));
+      await wait(15 * 60 * 1000);
+      expect(calls).toHaveLength(3);
+      expect(statusOf("d.jpg")).toHaveTextContent("Waiting…");
+      expect(statusOf("a.jpg")).toHaveTextContent("Connection dropped. Trying again…");
+
+      await goOnline();
+
+      expect(screen.queryByText(/No internet connection/)).not.toBeInTheDocument();
+      // Straight away, without waiting out the schedule: the two paused tries first, then d.jpg's turn.
+      expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg", "c.jpg", "a.jpg", "c.jpg"]);
+      expect(calls[3]!.file).toBe(calls[0]!.file);
+      expect(calls[3]!.submission).toBe(1);
+      await act(async () => calls[3]!.finish({ ok: true }));
+      expect(calls.at(-1)!.file.name).toBe("d.jpg");
+    });
+
+    it("does not take 'online' as proof: a try that fails goes on along the schedule", async () => {
+      const { calls } = await sendingWithClock([photo("a.jpg")]);
+      await act(async () => calls[0]!.finish({ ok: false, reason: "connection" }));
+      await goOffline();
+      await goOnline();
+      expect(calls).toHaveLength(2);
+
+      await act(async () => calls[1]!.finish({ ok: false, reason: "connection" }));
+
+      expect(statusOf("a.jpg")).toHaveTextContent("Connection dropped. Trying again…");
+      await wait(2999);
+      expect(calls).toHaveLength(2);
+      await wait(1);
+      expect(calls).toHaveLength(3);
+    });
+
+    it("starts nothing when Send is pressed with no connection, until it is back", async () => {
+      const user = userEvent.setup();
+      const { sender, calls } = fakeSender();
+      render(<App boot={boot} sender={sender} />);
+      await pick(user, [photo("a.jpg")]);
+      await user.click(nextButton());
+      await fillRequired(user);
+      await user.click(nextButton());
+      online = false;
+      await user.click(sendButton());
+      await act(async () => {});
+
+      expect(screen.getByText("No internet connection. Your photos will keep going when it comes back.")).toBeInTheDocument();
+      expect(calls).toHaveLength(0);
+
+      await goOnline();
+
+      expect(calls).toHaveLength(1);
+    });
+  });
+
+  describe("the foreground", () => {
+    it("tries again at once when the page is shown again, even one waiting for the connection", async () => {
+      const { calls } = await sendingWithClock([photo("a.jpg"), photo("b.jpg")]);
+      await act(async () => calls[0]!.finish({ ok: false, reason: "connection" }));
+      await act(async () => calls[1]!.finish({ ok: false, reason: "connection" }));
+
+      await hide();
+      await show();
+
+      expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg", "a.jpg", "b.jpg"]);
+
+      // Waiting for your connection: one more try when the member comes back to the page.
+      for (const seconds of [3, 10, 30, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60]) {
+        await act(async () => calls.at(-2)!.finish({ ok: false, reason: "connection" }));
+        await act(async () => calls.at(-1)!.finish({ ok: false, reason: "connection" }));
+        await wait(seconds * 1000);
+      }
+      await act(async () => calls.at(-2)!.finish({ ok: false, reason: "connection" }));
+      await act(async () => calls.at(-1)!.finish({ ok: false, reason: "connection" }));
+      expect(statusOf("a.jpg")).toHaveTextContent("Waiting for your connection");
+      const before = calls.length;
+
+      await hide();
+      await show();
+
+      expect(calls).toHaveLength(before + 2);
+      await act(async () => calls.at(-2)!.finish({ ok: true }));
+      await act(async () => calls.at(-1)!.finish({ ok: true }));
+      expect(screen.getByRole("heading", { name: "Thank you! We have your 2 photos." })).toBeInTheDocument();
+    });
+  });
+
+  describe("the screen wake lock", () => {
+    it("keeps the screen awake while sending, asks again when the page is shown, and lets go at the thank-you", async () => {
+      const { calls } = await sendingWithClock([photo("a.jpg")]);
+      expect(screen.getByText("Please keep this page open and your phone awake until it says thank you.")).toBeInTheDocument();
+      expect(wakeLockRequests).toBe(1);
+      expect(heldLocks()).toBe(1);
+
+      await hide();
+      expect(heldLocks()).toBe(0);
+      await show();
+      expect(wakeLockRequests).toBe(2);
+      expect(heldLocks()).toBe(1);
+
+      await act(async () => calls[0]!.finish({ ok: true }));
+
+      expect(screen.getByRole("heading", { name: "Thank you! We have your 1 photo." })).toBeInTheDocument();
+      expect(heldLocks()).toBe(0);
+      // Done means done: nothing more is asked for, or tried.
+      await show();
+      await goOffline();
+      await goOnline();
+      await fire(window, "focus");
+      expect(wakeLockRequests).toBe(2);
+      expect(calls).toHaveLength(1);
+      expect(leaveWarns()).toBe(false);
+    });
+
+    it("is not asked for before Send", async () => {
+      const user = userEvent.setup();
+      render(<App boot={boot} sender={fakeSender().sender} />);
+      await pick(user, [photo("a.jpg")]);
+
+      expect(wakeLockRequests).toBe(0);
+    });
+
+    it("sends all the same where the browser has none, or refuses it", async () => {
+      delete (navigator as { wakeLock?: unknown }).wakeLock;
+      const { calls } = await sendingWithClock([photo("a.jpg")]);
+      await act(async () => calls[0]!.finish({ ok: true }));
+      expect(screen.getByRole("heading", { name: "Thank you! We have your 1 photo." })).toBeInTheDocument();
+      cleanup();
+
+      vi.useRealTimers();
+      Object.defineProperty(navigator, "wakeLock", {
+        configurable: true,
+        value: { request: () => Promise.reject(new DOMException("Low battery", "NotAllowedError")) },
+      });
+      const second = await sendingWithClock([photo("b.jpg")]);
+      await act(async () => second.calls[0]!.finish({ ok: true }));
+      expect(screen.getByRole("heading", { name: "Thank you! We have your 1 photo." })).toBeInTheDocument();
+    });
+  });
+
+  describe("leaving the page", () => {
+    it("asks first only while something is still on its way", async () => {
+      const user = userEvent.setup();
+      const { sender, calls } = fakeSender();
+      render(<App boot={boot} sender={sender} />);
+      await pick(user, [photo("a.jpg"), photo("b.jpg")]);
+      expect(leaveWarns()).toBe(false);
+      await describeAndSend(user);
+
+      expect(leaveWarns()).toBe(true);
+      await act(async () => calls[0]!.finish({ ok: true }));
+      expect(leaveWarns()).toBe(true);
+      await act(async () => calls[1]!.finish({ ok: false, reason: "failed" }));
+
+      expect(screen.getByRole("heading", { name: "Most of your photos are in." })).toBeInTheDocument();
+      expect(leaveWarns()).toBe(false);
+    });
+  });
+
+  describe("signed out", () => {
+    it("holds everything, offers sign-in in a new tab, and carries on when the member comes back signed in", async () => {
+      let session: SessionCheck = "signed_out";
+      const sessionChecks = vi.fn(async () => session);
+      const { calls, starts } = await sendingWithClock([photo("a.jpg"), photo("b.jpg"), photo("c.jpg")], {
+        session: sessionChecks,
+      });
+      act(() => calls[0]!.events.onProgress(40));
+
+      await act(async () => calls[0]!.finish({ ok: false, reason: "signed_out" }));
+
+      expect(
+        screen.getByText("You've been signed out. Sign in again to keep going. We'll open it in a new tab so your photos stay here."),
+      ).toBeInTheDocument();
+      const signIn = screen.getByRole("link", { name: "Sign in again" });
+      expect(signIn).toHaveAttribute("href", "/upload/signed-in");
+      expect(signIn).toHaveAttribute("target", "_blank");
+      expect(statusOf("a.jpg")).toHaveTextContent("Waiting…");
+      // The one in flight ends as it will; nothing starts while signed out.
+      await act(async () => calls[1]!.finish({ ok: false, reason: "signed_out" }));
+      await wait(15 * 60 * 1000);
+      expect(calls).toHaveLength(2);
+      expect(leaveWarns()).toBe(true);
+
+      // Back to this tab before signing in: still signed out.
+      await fire(window, "focus");
+      expect(sessionChecks).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("link", { name: "Sign in again" })).toBeInTheDocument();
+
+      // Signed in in the other tab, then back to this one.
+      session = "signed_in";
+      await hide();
+      await show();
+
+      expect(screen.queryByRole("link", { name: "Sign in again" })).not.toBeInTheDocument();
+      // The same files, in the same Submission: each picks up where it stopped.
+      expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg", "a.jpg", "b.jpg"]);
+      expect(calls[2]!.file).toBe(calls[0]!.file);
+      expect(calls[2]!.submission).toBe(1);
+      expect(starts).toHaveLength(1);
+      for (const call of calls.slice(2)) await act(async () => call.finish({ ok: true }));
+      await act(async () => calls[4]!.finish({ ok: true }));
+      expect(screen.getByRole("heading", { name: "Thank you! We have your 3 photos." })).toBeInTheDocument();
+    });
+
+    it("holds the automatic tries too, and resumes them when signed in again", async () => {
+      const { calls } = await sendingWithClock([photo("a.jpg"), photo("b.jpg")]);
+      await act(async () => calls[0]!.finish({ ok: false, reason: "connection" }));
+      await act(async () => calls[1]!.finish({ ok: false, reason: "signed_out" }));
+
+      await wait(60 * 1000);
+      expect(calls).toHaveLength(2);
+      expect(statusOf("a.jpg")).toHaveTextContent("Connection dropped. Trying again…");
+
+      await fire(window, "focus");
+
+      expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg", "a.jpg", "b.jpg"]);
+    });
+
+    it("keeps everything chosen and entered when Send finds the member signed out", async () => {
+      const user = userEvent.setup();
+      const { sender, calls, starts } = fakeSender({ beginResults: [{ ok: false, reason: "signed_out" }] });
+      render(<App boot={boot} sender={sender} />);
+      await pick(user, [photo("a.jpg")]);
+      await user.click(nextButton());
+      await fillRequired(user);
+      await nextAndSend(user);
+
+      expect(screen.getByRole("link", { name: "Sign in again" })).toBeInTheDocument();
+      expect(screen.queryByText("We couldn't start sending. Please try again.")).not.toBeInTheDocument();
+      expect(screen.getByRole("heading", { level: 2, name: "Change any single one (optional)" })).toBeInTheDocument();
+
+      await fire(window, "focus");
+      expect(screen.queryByRole("link", { name: "Sign in again" })).not.toBeInTheDocument();
+      await user.click(sendButton());
+      await act(async () => {});
+
+      expect(starts).toHaveLength(2);
+      expect(starts[1]!.details.title).toBe("Dovetail class, May 3");
+      expect(calls).toHaveLength(1);
+    });
+  });
+
+  describe("no longer a member", () => {
+    it("shows the renewal message, opening each way out in a new tab, and carries on once that is sorted", async () => {
+      let session: SessionCheck = "not_member";
+      const { calls } = await sendingWithClock([photo("a.jpg"), photo("b.jpg")], { session: async () => session });
+      await act(async () => calls[0]!.finish({ ok: true }));
+
+      await act(async () => calls[1]!.finish({ ok: false, reason: "not_member" }));
+
+      expect(screen.getByText("This page is for current SDFWA members")).toBeInTheDocument();
+      expect(
+        screen.getByText("You're signed in as Pat Member, but we don't see a current paid membership on this account."),
+      ).toBeInTheDocument();
+      const renew = screen.getByRole("link", { name: "Renew my membership" });
+      expect(renew).toHaveAttribute("href", "https://www.example.org/renew");
+      expect(renew).toHaveAttribute("target", "_blank");
+      const other = screen.getByRole("link", { name: "Sign out and sign in again" });
+      expect(other).toHaveAttribute("href", "https://auth.example.org/logout?redirect=signed-in");
+      expect(other).toHaveAttribute("target", "_blank");
+      // What was sent stays sent.
+      expect(statusOf("a.jpg")).toHaveTextContent("✓ Sent");
+
+      await fire(window, "focus");
+      expect(calls).toHaveLength(2);
+
+      session = "signed_in";
+      await fire(window, "focus");
+
+      expect(screen.queryByText("This page is for current SDFWA members")).not.toBeInTheDocument();
+      expect(calls).toHaveLength(3);
+      expect(calls[2]!.file).toBe(calls[1]!.file);
+    });
+  });
+
+  describe("a busy service", () => {
+    it("says it will keep trying, holds the rest of the queue, and carries on when it can", async () => {
+      const { calls } = await sendingWithClock([photo("a.jpg"), photo("b.jpg"), photo("c.jpg")]);
+
+      await act(async () => calls[0]!.finish({ ok: false, reason: "busy" }));
+
+      expect(screen.getByText("We're busy right now. We'll keep trying for a few minutes.")).toBeInTheDocument();
+      expect(screen.queryByText("We're busy right now. Please try again in a few minutes.")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+      // b.jpg goes on; c.jpg waits with the queue.
+      await act(async () => calls[1]!.finish({ ok: true }));
+      expect(calls).toHaveLength(2);
+      expect(statusOf("c.jpg")).toHaveTextContent("Waiting…");
+
+      await wait(1000);
+      expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg", "a.jpg"]);
+      act(() => calls[2]!.events.onProgress(10));
+
+      expect(screen.queryByText(/We'll keep trying/)).not.toBeInTheDocument();
+      expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg", "a.jpg", "c.jpg"]);
+    });
+
+    it("asks the member to try again once the automatic tries run out", async () => {
+      const { calls } = await sendingWithClock([photo("a.jpg")]);
+      await act(async () => calls[0]!.finish({ ok: false, reason: "busy" }));
+      for (const seconds of [1, 3, 10, 30, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60]) {
+        await wait(seconds * 1000);
+        await act(async () => calls.at(-1)!.finish({ ok: false, reason: "busy" }));
+      }
+
+      expect(calls).toHaveLength(16);
+      expect(statusOf("a.jpg")).toHaveTextContent("We're busy right now. Please try again in a few minutes.");
+      expect(screen.queryByText(/We'll keep trying/)).not.toBeInTheDocument();
+      await press(screen.getByRole("button", { name: "Try again" }));
+      expect(calls).toHaveLength(17);
+    });
+  });
+
+  describe("browser history", () => {
+    const stepHeading = (name: string) => screen.getByRole("heading", { level: 2, name });
+
+    it("Back goes to the previous step, keeping what was entered, and Forward does not skip ahead", async () => {
+      const user = userEvent.setup();
+      render(<App boot={boot} sender={fakeSender().sender} />);
+      await pick(user, [photo("a.jpg")]);
+      await user.click(nextButton());
+      await fillRequired(user);
+      await user.click(nextButton());
+      expect(stepHeading("Change any single one (optional)")).toBeInTheDocument();
+
+      await act(async () => history.back());
+      await waitFor(() => expect(stepHeading("Tell us about them")).toBeInTheDocument());
+      expect(titleBox()).toHaveValue("Dovetail class, May 3");
+
+      await act(async () => history.back());
+      await waitFor(() => expect(stepHeading("Choose your photos and videos")).toBeInTheDocument());
+      expect(tiles()).toHaveLength(1);
+
+      await act(async () => history.forward());
+      await act(async () => new Promise((r) => setTimeout(r, 20)));
+      expect(stepHeading("Choose your photos and videos")).toBeInTheDocument();
+
+      // Next again makes the history match.
+      await user.click(nextButton());
+      expect(stepHeading("Tell us about them")).toBeInTheDocument();
+    });
+
+    it("keeps the page's own Back in step with the browser's", async () => {
+      const user = userEvent.setup();
+      render(<App boot={boot} sender={fakeSender().sender} />);
+      await pick(user, [photo("a.jpg")]);
+      await user.click(nextButton());
+      await fillRequired(user);
+      await user.click(nextButton());
+      await user.click(screen.getByRole("button", { name: "Back" }));
+      expect(stepHeading("Tell us about them")).toBeInTheDocument();
+
+      await act(async () => history.back());
+      await waitFor(() => expect(stepHeading("Choose your photos and videos")).toBeInTheDocument());
+    });
+
+    it("during sending, leaves the page's first entry behind, so Back would leave the page and the warning asks first", async () => {
+      const user = userEvent.setup();
+      render(<App boot={boot} sender={fakeSender().sender} />);
+      await pick(user, [photo("a.jpg")]);
+      await describeAndSend(user);
+
+      await waitFor(() => expect((history.state as { sdfwaStep?: { index: number } }).sdfwaStep?.index).toBe(0));
+      expect(stepHeading("Sending")).toBeInTheDocument();
+      expect(leaveWarns()).toBe(true);
+    });
+  });
+
+  it("starts only one Submission when Send is pressed twice in a row", async () => {
+    const user = userEvent.setup();
+    const { sender, starts } = fakeSender();
+    render(<App boot={boot} sender={sender} />);
+    await pick(user, [photo("a.jpg")]);
+    await user.click(nextButton());
+    await fillRequired(user);
+    await user.click(nextButton());
+
+    await user.dblClick(sendButton());
+    await act(async () => {});
+
+    expect(starts).toHaveLength(1);
   });
 });

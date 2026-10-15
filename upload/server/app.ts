@@ -1,6 +1,8 @@
 // The upload service's HTTP surface, everything under /upload:
 //
 //   /upload, /upload/...   the page, gated on the SDFWA session
+//   /upload/signed-in      the same gate; "You can close this tab" after
+//                          signing in again in a new tab (#59)
 //   /upload/assets/...     the built app's scripts and styles (public)
 //   /upload/api/...        the narrow API; session re-checked on every call
 //     GET /options         the live choices for the list fields (options.ts)
@@ -23,7 +25,7 @@ import http from "node:http";
 import { readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { BOOT_ELEMENT_ID, type Boot } from "../shared/boot.ts";
+import { BOOT_ELEMENT_ID, SIGNED_IN_PATH, type Boot } from "../shared/boot.ts";
 import { createAuditLog, stdoutSink, type AuditEvent, type AuditSink } from "./audit.ts";
 import type { Config } from "./config.ts";
 import { checkHealth, createReachability } from "./health.ts";
@@ -246,6 +248,10 @@ export function createService(config: Config, options: ServiceOptions = {}): Ser
 
   const uploadUrl = `${config.publicBaseUrl}${BASE}/`;
   const signOutUrl = `${config.authBaseUrl}/logout?redirect=${encodeURIComponent(uploadUrl)}`;
+  // Where "Sign in again" (and switching account) lands in its new tab (#59):
+  // gated like the page, so a signed-out member is sent to sign in first.
+  const signedInPath = SIGNED_IN_PATH;
+  const switchAccountUrl = `${config.authBaseUrl}/logout?redirect=${encodeURIComponent(`${config.publicBaseUrl}${signedInPath}`)}`;
   const signInUrl = (target: string) => `${config.authBaseUrl}/login?redirect=${encodeURIComponent(target)}`;
   const authOpts = { authBaseUrl: config.authBaseUrl, timeoutMs: config.authTimeoutMs };
 
@@ -293,12 +299,14 @@ export function createService(config: Config, options: ServiceOptions = {}): Ser
     if (!isEntitled(s.user)) {
       return sendPage(res, 403, { screen: "not-member", user, renewUrl: config.renewUrl, signOutUrl });
     }
+    // Signed in again in a new tab (#59): nothing to send from here.
+    if (url.pathname === signedInPath) return sendPage(res, 200, { screen: "signed-in" });
     // Without its ResourceSpace key the service cannot take anything: say so
     // plainly rather than let a member pick photos that cannot be sent.
     if (!rsConfigured) return sendPage(res, 503, { screen: "unavailable" }, { "Retry-After": "300" });
     // Nor while ResourceSpace is not answering (#30): nothing could be sent.
     if (!(await reachability.reachable())) return sendPage(res, 503, { screen: "unavailable" }, { "Retry-After": "30" });
-    return sendPage(res, 200, { screen: "app", user, signOutUrl });
+    return sendPage(res, 200, { screen: "app", user, signOutUrl, renewUrl: config.renewUrl, switchAccountUrl });
   }
 
   // --- the API -------------------------------------------------------------
