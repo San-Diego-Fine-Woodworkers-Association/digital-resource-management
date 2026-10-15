@@ -6,8 +6,9 @@
 // arrived file to ResourceSpace, naming its Item (#57).
 //
 // It does not try again by itself (#58): it says why a send stopped, and the
-// page (itemState.ts) decides when to try again. "connection" is the
-// connection, or the service behind it, not answering; trying the same send
+// page (itemState.ts) decides when to try again. "connection" is no answer
+// at all; "busy" includes the service being down behind the proxy (a
+// restart). Either way, trying the same send
 // again resumes the file from what the service already has, or repeats only
 // the hand-off, which never makes a second Item.
 import Uppy from "@uppy/core";
@@ -64,9 +65,9 @@ export type SendResult =
   /**
    * A Refusal: the service will not take this file (it looked inside, or the
    * Submission has no room); sending it again will not help. busy: the
-   * service cannot take it just now (#60); trying again later will.
-   * connection: no answer, or none from the service itself (#58); trying
-   * again soon should work. signed_out, not_member: see SignInTrouble.
+   * service cannot take it just now (#60), or the proxy answered for it
+   * while it restarts or is down; trying again later will. connection: no
+   * answer at all (#58); trying again soon should work. signed_out, not_member: see SignInTrouble.
    * failed: anything else; trying again may work.
    */
   | { ok: false; reason: Refusal | "busy" | "connection" | SignInTrouble | "failed" };
@@ -81,10 +82,11 @@ export interface Submission {
   send(file: File, events: SendEvents, item: string): Promise<SendResult>;
   /**
    * The page reached its end with at least one sent: the service sends the
-   * Reviewers' email now, as partial if some are missing (#61). Fire and
-   * forget: never waited for, never shown.
+   * Reviewers' email now, as partial if some are missing (#61). `keptItems`
+   * is how many the member still has: one removed while sending is no longer
+   * expected. Fire and forget: never waited for, never shown.
    */
-  finished?(): void;
+  finished?(keptItems: number): void;
 }
 
 export interface Sender {
@@ -139,9 +141,10 @@ function signInTroubleOf(status: number, body: unknown): SignInTrouble | undefin
 /**
  * Why a request the service did not succeed with stopped: its own reason if
  * it gave one (a 502 "not_saved" is ResourceSpace failing, not the
- * connection); the connection when nothing answered (status 0) or something
- * in front of the service did (a bare 502, 503 or 504 from the proxy while it
- * restarts); otherwise failed.
+ * connection); the connection only when nothing answered at all (status 0);
+ * busy when something in front of the service did (a bare 502, 503 or 504
+ * from the proxy while the service restarts or is down): it is not the
+ * member's connection, and it will be back; otherwise failed.
  */
 export function failureOf(status: number, body: unknown): Exclude<SendResult, { ok: true }>["reason"] {
   const trouble = signInTroubleOf(status, body);
@@ -149,7 +152,8 @@ export function failureOf(status: number, body: unknown): Exclude<SendResult, { 
   const reason = refusalIn(body);
   if (reason) return reason;
   if (typeof errorIn(body) === "string") return "failed";
-  if (status === 0 || status === 502 || status === 503 || status === 504) return "connection";
+  if (status === 0) return "connection";
+  if (status === 502 || status === 503 || status === 504) return "busy";
   return "failed";
 }
 
@@ -282,7 +286,7 @@ function createSubmission(submissionId: string): Submission {
   }
 
   return {
-    finished: () => reportFinished(submissionId),
+    finished: (keptItems) => reportFinished(submissionId, keptItems),
     async send(file, events, item) {
       const uploaded = await upload(file, events.onProgress);
       if ("stopped" in uploaded) return { ok: false, reason: uploaded.stopped };
@@ -298,17 +302,17 @@ function createSubmission(submissionId: string): Submission {
 }
 
 /**
- * Tells the service the page is done with this Submission (#61). Best-effort:
- * any answer, or none, is ignored; `keepalive` lets it go even as the tab
- * closes.
+ * Tells the service the page is done with this Submission, and how many Items
+ * the member kept (#61). Best-effort: any answer, or none, is ignored;
+ * `keepalive` lets it go even as the tab closes.
  */
-export function reportFinished(submissionId: string): void {
+export function reportFinished(submissionId: string, keptItems: number): void {
   try {
     fetch(`${SUBMISSIONS_ENDPOINT}/${encodeURIComponent(submissionId)}/finished`, {
       method: "POST",
       credentials: "same-origin",
       headers: { "content-type": "application/json" },
-      body: "{}",
+      body: JSON.stringify({ keptItems }),
       keepalive: true,
     }).catch(() => {});
   } catch {

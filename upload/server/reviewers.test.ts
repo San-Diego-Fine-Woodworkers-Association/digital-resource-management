@@ -41,11 +41,11 @@ async function sendOne(submission: string, file = jpeg()) {
   expect(res.status).toBe(200);
 }
 
-function finished(submission: string, cookie = COOKIE) {
+function finished(submission: string, cookie = COOKIE, body: unknown = {}) {
   return fetch(`${h!.url}/upload/api/submissions/${submission}/finished`, {
     method: "POST",
     headers: { cookie, "content-type": "application/json" },
-    body: "{}",
+    body: JSON.stringify(body),
   });
 }
 
@@ -199,6 +199,75 @@ describe("when the page finishes with some not sent", () => {
     expect(smtp!.received).toHaveLength(0);
     expect(h!.notifier().pending(s)).toBe(false);
     expect(h!.logLines.map((l) => l.message)).toContain("no reviewer email: nothing in the Submission arrived");
+  });
+});
+
+describe("when the member removed some while sending", () => {
+  it("is complete once all they kept are in: a removed one is no longer expected", async () => {
+    const { c } = await start();
+    const s = await c.startSubmission(COOKIE, startBody({ expectedItems: 3 }));
+    await sendOne(s);
+    await sendOne(s);
+    await settle();
+    expect(smtp!.received).toHaveLength(0);
+
+    expect((await finished(s, COOKIE, { keptItems: 2 })).status).toBe(202);
+    await settle();
+    expect(only().mail.subject).toBe("New photos from Pat Member: Dovetail class, May 3 (2 photos)");
+    expect(emailLines(h!).map((l) => l.outcome)).toEqual(["sent_complete"]);
+  });
+
+  it("is partial against what they kept when some of those are not in", async () => {
+    const { c } = await start();
+    const s = await c.startSubmission(COOKIE, startBody({ expectedItems: 5 }));
+    await sendOne(s);
+    await sendOne(s);
+    // One removed; of the 4 kept, one could not be added and one gave up: both still count as not sent.
+    expect((await finished(s, COOKIE, { keptItems: 4 })).status).toBe(202);
+    await settle();
+    const m = only();
+    expect(m.mail.subject).toBe("Partly sent: New photos from Pat Member: Dovetail class, May 3 (2 of 4 sent)");
+    expect(m.mail.text).toContain("Sent: 2 of 4 (2 photos)");
+  });
+
+  it("keeps what they kept across a restart", async () => {
+    const { c } = await start({}, { emailRetryDelaysMs: [60_000, 60_000, 60_000] });
+    const s = await c.startSubmission(COOKIE, startBody({ expectedItems: 4 }));
+    await sendOne(s);
+    smtp!.refuseNext = 100;
+    expect((await finished(s, COOKIE, { keptItems: 2 })).status).toBe(202);
+    while (smtp!.tries === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+    await h!.restart();
+    smtp!.refuseNext = 0;
+    await settle();
+    expect(only().mail.subject).toMatch(/^Partly sent: .*\(1 of 2 sent\)$/);
+  });
+
+  it("ignores a count that doesn't fit, logs it, and goes by the count given at Send", async () => {
+    const { c } = await start();
+    // Fewer than already arrived, more than were expected, not a whole number, not a number, none at all.
+    const wrong = [1, 4, 2.5, "2", null, 0];
+    for (const keptItems of wrong) {
+      const s = await c.startSubmission(COOKIE, startBody({ expectedItems: 3 }));
+      await sendOne(s);
+      await sendOne(s);
+      expect((await finished(s, COOKIE, { keptItems })).status).toBe(202);
+    }
+    await settle();
+    expect(smtp!.received.map((r) => r.mail.subject)).toEqual(
+      wrong.map(() => "Partly sent: New photos from Pat Member: Dovetail class, May 3 (2 of 3 sent)"),
+    );
+    const ignored = h!.logLines.filter((l) => l.message === "ignored the page's count of Items kept");
+    expect(ignored.map((l) => l.fields?.keptItems)).toEqual([1, 4, 2.5, "string", "object", 0]);
+  });
+
+  it("without the page saying so, the stall goes by the count given at Send", async () => {
+    const { c } = await start();
+    const s = await c.startSubmission(COOKIE, startBody({ expectedItems: 3 }));
+    await sendOne(s);
+    await sendOne(s);
+    await stall();
+    expect(only().mail.subject).toBe("Partly sent: New photos from Pat Member: Dovetail class, May 3 (2 of 3 sent)");
   });
 });
 
@@ -432,5 +501,55 @@ describe("the kill switch", () => {
     await stall();
     expect(smtp!.tries).toBe(0);
     expect((await readdir(h!.stagingDir)).some((n) => n.endsWith(".notify.json"))).toBe(false);
+  });
+
+  const files = async (s: string) => (await readdir(h!.stagingDir)).filter((n) => n.startsWith(`${s}.`)).sort();
+  const DAY = 24 * 60 * MINUTE;
+
+  it("holds an email that was still to go, past the sweep, and sends it once the switch is off again", async () => {
+    const { c } = await start();
+    const s = await c.startSubmission(COOKIE, startBody({ expectedItems: 2 }));
+    await sendOne(s);
+    await settle();
+    expect(smtp!.received).toHaveLength(0);
+
+    await h!.restart({ REVIEWER_EMAIL_PAUSED: "true" });
+    h!.advance(25 * 60 * MINUTE);
+    await h!.sweep();
+    await stall();
+    expect(smtp!.tries).toBe(0);
+    expect(await files(s)).toEqual([`${s}.notify.json`, `${s}.submission.json`]);
+    expect(h!.logLines).toContainEqual({ message: "reviewer emails held while paused", fields: { count: 1 } });
+
+    await h!.restart({ REVIEWER_EMAIL_PAUSED: "false" });
+    await stall();
+    expect(only().mail.subject).toBe("Partly sent: New photos from Pat Member: Dovetail class, May 3 (1 of 2 sent)");
+    await stall(2 * 24 * 60);
+    await h!.restart();
+    await stall();
+    expect(smtp!.received).toHaveLength(1);
+  });
+
+  it("gives up one held for more than 7 days, logged and audited, and the sweep then clears it", async () => {
+    const { c } = await start();
+    const s = await c.startSubmission(COOKIE, startBody({ expectedItems: 2 }));
+    await sendOne(s);
+    await settle();
+
+    await h!.restart({ REVIEWER_EMAIL_PAUSED: "true" });
+    h!.advance(8 * DAY);
+    await h!.sweep();
+    expect(await files(s)).toEqual([`${s}.notify.json`, `${s}.submission.json`]);
+
+    await h!.restart({ REVIEWER_EMAIL_PAUSED: "false" });
+    await stall();
+    expect(smtp!.tries).toBe(0);
+    expect(h!.notifier().pending(s)).toBe(false);
+    expect(h!.logLines.map((l) => l.message)).toContain("reviewer email given up: held too long");
+    expect(emailLines(h!)).toMatchObject([{ outcome: "held_too_long", submissionId: s }]);
+
+    h!.advance(DAY + MINUTE);
+    await h!.sweep();
+    expect(await files(s)).toEqual([]);
   });
 });

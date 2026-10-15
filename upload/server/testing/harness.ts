@@ -135,8 +135,8 @@ export interface Harness {
   sweep: () => Promise<SweepReport>;
   /** The Reviewers' email of the service running now (off unless the test turns it on). */
   notifier: () => Notifier;
-  /** Stops the service and starts it again on the same staging volume, as a redeploy does. */
-  restart: () => Promise<void>;
+  /** Stops the service and starts it again on the same staging volume, as a redeploy does; `env` changes its settings from then on. */
+  restart: (env?: Record<string, string>) => Promise<void>;
   close: () => Promise<void>;
 }
 
@@ -169,7 +169,7 @@ export async function startHarness(env: Record<string, string> = {}, opts: Harne
 
   const auditLines: string[] = [];
   const logLines: Harness["logLines"] = [];
-  const config = loadConfig({
+  const baseEnv: Record<string, string> = {
     PUBLIC_BASE_URL,
     AUTH_BASE_URL: auth.url,
     RS_BASE_URL: rs.url,
@@ -182,7 +182,8 @@ export async function startHarness(env: Record<string, string> = {}, opts: Harne
     // The Reviewers' email is off unless a test turns it on, with its own fake relay (testing/fake-smtp.ts).
     REVIEWER_EMAIL_PAUSED: "true",
     ...env,
-  });
+  };
+  let config = loadConfig(baseEnv);
   let skew = 0;
   let service: Service;
   async function start() {
@@ -220,8 +221,9 @@ export async function startHarness(env: Record<string, string> = {}, opts: Harne
     },
     sweep: () => service.sweep(),
     notifier: () => service.notifier,
-    restart: async () => {
+    restart: async (env) => {
       await stop();
+      if (env) config = loadConfig(Object.assign(baseEnv, env));
       await start();
     },
     close: async () => {

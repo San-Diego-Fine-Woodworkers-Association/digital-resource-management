@@ -6,7 +6,10 @@
 //   - complete, at once, when every Item the page said it would send is in
 //     ResourceSpace;
 //   - partial ("9 of 14 sent"), at once, when the page says it finished with
-//     some not sent (POST /submissions/<id>/finished);
+//     some not sent (POST /submissions/<id>/finished). The page also says
+//     how many Items the member kept: one removed while sending is no longer
+//     expected, so the rest all in is complete. One refused as "Can't be
+//     added" is still kept, and so still counts as not sent;
 //   - partial, when nothing has arrived for the stall time (30 minutes). The
 //     deadline slides forward with every chunk, hand-off and Item, so a slow
 //     but healthy upload never trips it. If none at all arrived, there is
@@ -38,7 +41,15 @@
 // accepted over a lost email (#61 decision 5). A failed send is tried again
 // up to 3 times with growing pauses, then logged in the audit trail and
 // given up; the member never sees any of it.
-import { readdir, readFile, rename, writeFile } from "node:fs/promises";
+//
+// The kill switch (REVIEWER_EMAIL_PAUSED) holds the emails still to go, it
+// does not drop them: nothing new is scheduled or sent, but each pending
+// state file (and so its Submission's record) is kept from the staging sweep
+// however long the pause lasts. The next start with the switch off re-arms
+// them as after any restart. One left untouched for more than a week
+// (HOLD_LIMIT_MS: a long pause, or the service down that long) is given up
+// then, logged and audited, instead of reaching the Reviewers that late.
+import { readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Details } from "../shared/details.ts";
 import type { MediaKind } from "../shared/media.ts";
@@ -49,6 +60,12 @@ import type { SubmissionRecord } from "./submissions.ts";
 
 /** The pauses before each of the 3 tries after a failed send. */
 export const EMAIL_RETRY_DELAYS_MS = [30_000, 2 * 60_000, 10 * 60_000];
+
+/**
+ * How long an email still to go may wait with nothing happening to it (its
+ * state file not written) before a start gives it up: 7 days.
+ */
+export const HOLD_LIMIT_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** How long a sent email is remembered in memory (its state file goes with the staging sweep). */
 const REMEMBER_FOR_MS = 24 * 60 * 60 * 1000;
@@ -66,6 +83,12 @@ export interface NotifyState {
   status: "pending" | "sent" | "gave_up";
   /** The page said it finished with some not sent. */
   finished?: boolean;
+  /**
+   * How many Items the member still had when the page finished: those
+   * removed while sending are no longer expected. Checked before it is kept;
+   * without it, the count the page gave at Send.
+   */
+  keptItems?: number;
   /** What has arrived in ResourceSpace, by upload id. */
   sent: Record<string, MediaKind>;
   /** What went (or why nothing did), and when. */
@@ -95,8 +118,12 @@ export interface Notifier {
   progress(submissionId: string): void;
   /** An Item is in ResourceSpace. Sends the complete email if it was the last one. */
   itemSent(submissionId: string, uploadId: string, kind: MediaKind): Promise<void>;
-  /** The page says it finished with some not sent. Only the member who started it may say so. */
-  finished(submissionId: string, owner: string): Promise<"ok" | "not_found">;
+  /**
+   * The page says it finished with some not sent, and how many Items the
+   * member kept (`keptItems`, untrusted: ignored unless it fits). Only the
+   * member who started it may say so.
+   */
+  finished(submissionId: string, owner: string, keptItems?: unknown): Promise<"ok" | "not_found">;
   /** Whether its email is still to go: its record must stay on staging (the sweep). */
   pending(submissionId: string): boolean;
   /** Sends whatever stalled email is due now. The timers call it; tests too, after moving the clock on. */
@@ -168,6 +195,8 @@ export function createNotifier(deps: {
   }
 
   const sentCount = (e: Entry) => Object.keys(e.state.sent).length;
+  /** How many are expected: what the member kept, if the page said so, else the count given at Send. */
+  const expectedOf = (e: Entry) => e.state.keptItems ?? e.record?.expectedItems;
   const isPending = (e: Entry | undefined): e is Entry => !!e && e.state.status === "pending" && !e.sending;
 
   /**
@@ -177,7 +206,7 @@ export function createNotifier(deps: {
    */
   function decide(e: Entry, reason: "item" | "finished" | "stalled"): void {
     if (!isPending(e)) return;
-    const expected = e.record?.expectedItems;
+    const expected = expectedOf(e);
     if (expected !== undefined && sentCount(e) >= expected) return send(e, "complete");
     if (reason === "item") return;
     if (!e.record) return send(e, "unknown", reason);
@@ -202,7 +231,7 @@ export function createNotifier(deps: {
       ...(e.damaged ? {} : { submitter: e.state.submitter }),
       sent: { photos: kinds.length - videos, videos },
       ...(r && kind !== "unknown"
-        ? { expectedItems: r.expectedItems, details: r.details, ownDetails: Object.keys(r.items ?? {}).length }
+        ? { expectedItems: expectedOf(e) ?? r.expectedItems, details: r.details, ownDetails: Object.keys(r.items ?? {}).length }
         : {}),
       ...(kind === "partial" && reason
         ? { why: reason === "finished" ? ({ finished: true } as const) : { stalledMinutes: Math.round(stallMs / 60_000) } }
@@ -261,6 +290,8 @@ export function createNotifier(deps: {
       if (s.submissionId !== id || typeof s.owner !== "string" || typeof s.status !== "string") return undefined;
       if (typeof s.submitter?.name !== "string" || typeof s.submitter.email !== "string") return undefined;
       if (typeof s.sent !== "object" || s.sent === null) return undefined;
+      // Checked before it was written; one that is not a count is left out.
+      if (s.keptItems !== undefined && !Number.isInteger(s.keptItems)) delete s.keptItems;
       return s as NotifyState;
     } catch {
       return undefined;
@@ -277,6 +308,8 @@ export function createNotifier(deps: {
     async load() {
       const names = await readdir(dir);
       const pending: Entry[] = [];
+      /** When each pending state file was last written. */
+      const lastWritten = new Map<Entry, number>();
       for (const name of names) {
         const id = STATE.exec(name)?.[1];
         if (!id || !isSubmissionId(id) || all.has(id)) continue;
@@ -293,6 +326,8 @@ export function createNotifier(deps: {
         if (state) entry.record = await recordOf(state);
         all.set(id, entry);
         pending.push(entry);
+        const written = (await stat(path.join(dir, name)).catch(() => undefined))?.mtimeMs;
+        if (written !== undefined) lastWritten.set(entry, written);
       }
       if (pending.length === 0) return;
       // What arrived while the state was not written (a crash between the two).
@@ -307,6 +342,15 @@ export function createNotifier(deps: {
         }
       }
       for (const e of pending) {
+        const held = now() - (lastWritten.get(e) ?? now());
+        if (held > HOLD_LIMIT_MS) {
+          // Too late to be of use: the Items are in Pending Review all the same.
+          const submissionId = e.state.submissionId;
+          log("reviewer email given up: held too long", { submissionId, heldDays: Math.floor(held / (24 * 60 * 60 * 1000)) });
+          audit.record({ event: "reviewer_email", outcome: "held_too_long", submissionId });
+          await finish(e, "gave_up", "held_too_long");
+          continue;
+        }
         log("reviewer email still to send after a restart", { submissionId: e.state.submissionId, known: !!e.record });
         arm(e);
         if (e.state.finished) decide(e, "finished");
@@ -346,11 +390,26 @@ export function createNotifier(deps: {
       decide(e, "item");
     },
 
-    async finished(submissionId, owner) {
+    async finished(submissionId, owner, keptItems) {
       const e = all.get(submissionId);
       if (!e || e.damaged || e.state.owner !== owner) return "not_found";
       if (!isPending(e) || e.state.finished) return "ok";
       e.state.finished = true;
+      if (keptItems !== undefined) {
+        // At least what has already arrived, and no more than were expected at Send.
+        const max = e.record?.expectedItems;
+        const n = typeof keptItems === "number" && Number.isInteger(keptItems) ? keptItems : undefined;
+        if (n !== undefined && max !== undefined && n >= Math.max(1, sentCount(e)) && n <= max) {
+          e.state.keptItems = n;
+        } else {
+          log("ignored the page's count of Items kept", {
+            submissionId,
+            keptItems: typeof keptItems === "number" ? keptItems : typeof keptItems,
+            sent: sentCount(e),
+            expected: max,
+          });
+        }
+      }
       await save(e);
       decide(e, "finished");
       return "ok";
@@ -374,18 +433,37 @@ export function createNotifier(deps: {
   };
 }
 
-/** A notifier that does nothing: the kill switch (REVIEWER_EMAIL_PAUSED). */
-export const pausedNotifier: Notifier = {
-  load: async () => {},
-  started: async () => {},
-  progress: () => {},
-  itemSent: async () => {},
-  finished: async () => "ok",
-  pending: () => false,
-  check: () => {},
-  idle: async () => {},
-  close: () => {},
-};
+/**
+ * The kill switch (REVIEWER_EMAIL_PAUSED): schedules and sends nothing, but
+ * holds every email that was still to go when it was turned on. Its state
+ * file stays pending, and `pending` keeps it and its record from the sweep,
+ * so the next start with the switch off sends it. A state file it cannot
+ * read is held too, as the notifier itself would.
+ */
+export function createPausedNotifier(deps: { dir: string; log: (message: string, fields?: Record<string, unknown>) => void }): Notifier {
+  const held = new Set<string>();
+  return {
+    async load() {
+      for (const name of await readdir(deps.dir)) {
+        const id = STATE.exec(name)?.[1];
+        if (!id || !isSubmissionId(id)) continue;
+        const status = await readFile(path.join(deps.dir, name), "utf8")
+          .then((raw) => (JSON.parse(raw) as { status?: unknown }).status)
+          .catch(() => undefined);
+        if (status !== "sent" && status !== "gave_up") held.add(id);
+      }
+      if (held.size > 0) deps.log("reviewer emails held while paused", { count: held.size });
+    },
+    started: async () => {},
+    progress: () => {},
+    itemSent: async () => {},
+    finished: async () => "ok",
+    pending: (submissionId) => held.has(submissionId),
+    check: () => {},
+    idle: async () => {},
+    close: () => {},
+  };
+}
 
 function isRecordShape(r: SubmissionRecord, id: string): boolean {
   const d = r.details as Partial<Details> | undefined;
