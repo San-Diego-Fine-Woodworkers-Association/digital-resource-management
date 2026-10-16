@@ -227,10 +227,11 @@ Items are still in Pending Review. Emails already scheduled when you turn it on
 are not sent while it is on. When it is turned off again, those still pending
 on staging are read back at startup and sent.
 
-> **Until #84 is deployed:** while the switch is on, the sweep doesn't know
-> those emails are pending, so one whose state file hasn't changed for 24
-> hours is removed and never sent. Keep the pause short, or tell the Reviewers
-> to check Pending Review.
+However long the pause lasts, the sweep keeps pending emails and their
+Submission records. One left pending for more than 7 days is given up
+instead of sent when the switch is turned off: it is logged as "reviewer email
+given up: held too long" and audited as `held_too_long`, and its Items are in
+Pending Review as usual.
 
 ## Limits and quotas
 

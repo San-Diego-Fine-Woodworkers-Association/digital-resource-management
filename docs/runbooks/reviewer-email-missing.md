@@ -45,7 +45,7 @@ Leave out the last `grep` to see every email. What you may find:
 | `could not send the reviewer email` without a `failed` yet | Still retrying (after 30 s, 2 min and 10 min). | wait, then recheck |
 | `no reviewer email: nothing in the Submission arrived` | Nothing reached ResourceSpace, so there was nothing to review. | the member's uploads: [ResourceSpace is down](resourcespace-down.md) |
 | `could not schedule the reviewer email` or `could not save the reviewer email's state` | Something went wrong writing to staging. | [Staging is full](staging-full.md) |
-| Nothing at all for that Submission | The kill switch was on when it started, or the container was recreated since (its log went with it). Until #84 is deployed, also: the kill switch was on for more than a day, and the sweep removed the pending email. | step 2; [Logs](../upload-service.md#logs-and-the-audit-trail) |
+| Nothing at all for that Submission | The kill switch was on when it started, or the container was recreated since (its log went with it). Or the kill switch was on for more than 7 days, so the email was given up (`held_too_long` in the audit log). | step 2; [Logs](../upload-service.md#logs-and-the-audit-trail) |
 
 **4. Can the server reach the relay?**
 
