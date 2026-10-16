@@ -68,11 +68,11 @@ const SUBMITTER_FIELDS = [
 ];
 
 // Metadata tabs (#90), in display order, and the fields on each in display order. Event
-// comes first because it holds the required Program / Event and Subject Type. A field that
+// comes first because it holds the required Title, Program / Event and Subject Type. A field that
 // does not exist on a host (e.g. Piece Category on a fresh install) is skipped.
 const FIELD_TABS = [
-    "Event" => ["programevent", "eventname", "subjecttype", "location", "date"],
-    "Content" => ["title", "caption", "person", "piececategory", "woodspecies", "accessibilityalttext"],
+    "Event" => ["title", "programevent", "eventname", "subjecttype", "location", "date"],
+    "Content" => ["caption", "person", "piececategory", "woodspecies", "accessibilityalttext"],
     "Credit" => ["credit", "creator"],
     "Submission" => ["submittername", "submitteremail", "submittermemberid", "submissionid", "submitterrights", "submitterfilename"],
     "Technical" => [

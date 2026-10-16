@@ -87,6 +87,10 @@ $use_native_input_for_date_field = true;
 $resource_view_use_pre = true;
 
 $sort_tabs = false;
+// Show the metadata tabs (#90) on the edit page and the edit step of the upload flow,
+// and order the Item view page by them (#93). Both default to false.
+$tabs_on_edit = true;
+$use_order_by_tab_view = true;
 $maxyear_extends_current = 5;
 $thumbs_display_archive_state = true;
 $file_checksums = true;
