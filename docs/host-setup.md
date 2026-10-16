@@ -7,8 +7,11 @@ volume) and ADR 0006 (Workspace SMTP relay).
 
 ## Check the host (read-only)
 
+The server's public IPv4 and IPv6 are in the Hetzner Cloud console, under the
+project's server. Use either for `<server IP>` below.
+
 ```sh
-HOST_SSH=root@5.78.204.140 scripts/host-setup.sh check
+HOST_SSH=root@<server IP> scripts/host-setup.sh check
 ```
 
 Prints the public IPs to allow on the relay, the attached Hetzner Volumes, the
@@ -21,7 +24,7 @@ Attach a 50 GB Hetzner Volume to the server. Hetzner's "automount" option is
 fine: the script takes over the empty `/mnt/HC_Volume_<id>` mount. Then:
 
 ```sh
-HOST_SSH=root@5.78.204.140 scripts/host-setup.sh staging /dev/disk/by-id/scsi-0HC_Volume_<id>
+HOST_SSH=root@<server IP> scripts/host-setup.sh staging /dev/disk/by-id/scsi-0HC_Volume_<id>
 ```
 
 It formats the volume only if it is blank (`STAGING_FORCE=1` to reformat),
@@ -38,8 +41,10 @@ Google Workspace admin console, Apps > Google Workspace > Gmail > Routing >
 SMTP relay service, add a setting:
 
 - Allowed senders: only addresses in my domains
-- Authentication: only accept mail from the specified IP addresses, the
-  server's public IPv4 and IPv6 from `check`; no SMTP authentication
+- Authentication: only accept mail from the specified IP addresses: the
+  server's public IPv4 and IPv6 (from the Hetzner Cloud console; `check`
+  prints them too). Allow both, because the server connects over IPv6. No
+  SMTP authentication
 - Encryption: require TLS
 
 The service sends as `no-reply@sdfwa.org` through `smtp-relay.gmail.com:587`
@@ -54,7 +59,7 @@ relayed mail passes both.
 Test from the server:
 
 ```sh
-HOST_SSH=root@5.78.204.140 scripts/host-setup.sh mail-test media-reviewers@sdfwa.org
+HOST_SSH=root@<server IP> scripts/host-setup.sh mail-test media-reviewers@sdfwa.org
 ```
 
 The script prints the SMTP conversation. Confirm that every Group member gets
