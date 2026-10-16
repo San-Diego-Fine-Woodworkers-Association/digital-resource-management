@@ -9,6 +9,11 @@
 //
 // Ownership rules, so re-running never clobbers admin edits to the wider schema:
 // - Base fields (Program / Event etc.) are only CREATED if missing, never modified.
+// - The stock Credit field is only retitled (Photographer credit) and Creator is
+//   created if missing (#87); nothing else about either is touched.
+// - The stock fields in UNUSED_FIELDS are deactivated (#88); nothing else about them is touched.
+// - Which tab each active field sits on, and the order of the fields, is owned by
+//   FIELD_TABS (#90); fields and tabs are looked up by shortname / name.
 // - Submitter fields, the two groups, the upload-service user and the dash tile
 //   are owned by this script: their settings are reset to what is declared here.
 
@@ -17,8 +22,11 @@ include_once "/var/www/html/include/dash_functions.php";
 include_once "/var/www/html/include/api_functions.php";
 include_once "/var/www/html/include/plugin_functions.php";
 
-// Resource types the member upload form can create (it never offers audio).
-const UPLOAD_RESOURCE_TYPES = ["Photo", "Video"];
+// Stock fields SDFWA does not use (#88). Deactivated, not deleted, so they and any values
+// stay in the database and can be switched back on in Admin > System > Manage metadata fields.
+// `text` is Extracted text, `accessibilityextend` is Accessibility - Extended Description,
+// `subject` and `event` are Keywords - Subject and Keywords - Event.
+const UNUSED_FIELDS = ["recognised", "extract", "keywords", "country", "text", "accessibilityextend", "subject", "event"];
 
 // Stock ResourceSpace fields the upload proxy writes. They ship with every install.
 const STOCK_FIELDS = ["title", "date", "caption"];
@@ -43,6 +51,12 @@ const BASE_FIELDS = [
     ]],
 ];
 
+// Credit fields (#87). `credit` is ResourceSpace's stock Credit field (IPTC by-line
+// mapping, so it already means the photographer); it keeps its shortname, ref,
+// exiftool mapping and values and only gets a new title. `creator` is added next to it.
+const CREDIT_FIELD = ["name" => "credit", "title" => "Photographer credit"];
+const CREATOR_FIELD = ["name" => "creator", "title" => "Creator", "type" => FIELD_TYPE_TEXT_BOX_SINGLE_LINE, "indexed" => true];
+
 // Set by the proxy from the verified session. Visible to anyone with f*, editable by nobody but the uploader.
 const SUBMITTER_FIELDS = [
     "submittername" => ["title" => "Submitter Name", "type" => FIELD_TYPE_TEXT_BOX_SINGLE_LINE, "indexed" => true],
@@ -51,6 +65,20 @@ const SUBMITTER_FIELDS = [
     "submissionid" => ["title" => "Submission ID", "type" => FIELD_TYPE_TEXT_BOX_SINGLE_LINE, "indexed" => true],
     "submitterrights" => ["title" => "Submitter Rights Confirmation", "type" => FIELD_TYPE_TEXT_BOX_MULTI_LINE, "indexed" => false],
     "submitterfilename" => ["title" => "Submitter Original Filename", "type" => FIELD_TYPE_TEXT_BOX_SINGLE_LINE, "indexed" => false],
+];
+
+// Metadata tabs (#90), in display order, and the fields on each in display order. Event
+// comes first because it holds the required Program / Event and Subject Type. A field that
+// does not exist on a host (e.g. Piece Category on a fresh install) is skipped.
+const FIELD_TABS = [
+    "Event" => ["programevent", "eventname", "subjecttype", "location", "date"],
+    "Content" => ["title", "caption", "person", "piececategory", "woodspecies", "accessibilityalttext"],
+    "Credit" => ["credit", "creator"],
+    "Submission" => ["submittername", "submitteremail", "submittermemberid", "submissionid", "submitterrights", "submitterfilename"],
+    "Technical" => [
+        "camera", "source", "notes", "originalfilename",
+        "framerate", "videobitrate", "aspectratio", "videosize", "duration", "channelmode", "samplerate", "audiobitrate",
+    ],
 ];
 
 const UPLOADER_GROUP = "Member Upload Service";
@@ -96,14 +124,6 @@ foreach (REQUIRED_PLUGINS as $plugin) {
     }
 }
 
-// ---------- resource types ----------
-$restypes = [];
-foreach (UPLOAD_RESOURCE_TYPES as $name) {
-    $ref = (int) ps_value("SELECT ref value FROM resource_type WHERE name = ?", ["s", $name], 0);
-    $ref || fail("resource type '$name' not found");
-    $restypes[] = $ref;
-}
-
 // ---------- stock + base fields ----------
 $proxyFields = [];
 foreach (STOCK_FIELDS as $short) {
@@ -127,6 +147,28 @@ foreach (BASE_FIELDS as $short => $def) {
     $proxyFields[$short] = $ref;
 }
 
+// ---------- credit fields ----------
+$creditRef = field_ref(CREDIT_FIELD["name"]);
+if ($creditRef) {
+    ps_query("UPDATE resource_type_field SET title = ? WHERE ref = ?", ["s", CREDIT_FIELD["title"], "i", $creditRef]);
+    echo "titled  credit field    $creditRef " . CREDIT_FIELD["name"] . " => " . CREDIT_FIELD["title"] . "\n";
+} else {
+    echo "skipped credit field    '" . CREDIT_FIELD["name"] . "' not found\n";
+}
+$creatorRef = field_ref(CREATOR_FIELD["name"]);
+if ($creatorRef) {
+    echo "exists  creator field   $creatorRef " . CREATOR_FIELD["name"] . "\n";
+} else {
+    $creatorRef = create_resource_type_field(
+        CREATOR_FIELD["title"], 0, CREATOR_FIELD["type"], CREATOR_FIELD["name"], CREATOR_FIELD["indexed"]
+    );
+    // Sit right after Photographer credit, which is in the list at order_by 120.
+    $creditOrder = (int) ps_value("SELECT order_by value FROM resource_type_field WHERE ref = ?", ["i", $creditRef], 120);
+    ps_query("UPDATE resource_type_field SET order_by = ? WHERE ref = ?", ["i", $creditOrder + 5, "i", $creatorRef]);
+    echo "created creator field   $creatorRef " . CREATOR_FIELD["name"] . "\n";
+}
+clear_query_cache("schema");
+
 // ---------- submitter fields ----------
 $submitterFields = [];
 foreach (SUBMITTER_FIELDS as $short => $def) {
@@ -134,17 +176,60 @@ foreach (SUBMITTER_FIELDS as $short => $def) {
     if ($ref) {
         echo "exists  submitter field $ref $short\n";
     } else {
-        $ref = create_resource_type_field($def["title"], $restypes, $def["type"], $short, $def["indexed"]);
+        $ref = create_resource_type_field($def["title"], 0, $def["type"], $short, $def["indexed"]);
         echo "created submitter field $ref $short\n";
     }
     ps_query(
         "UPDATE resource_type_field SET title = ?, type = ?, required = 0, hide_when_uploading = 1,
-            external_user_access = 0, keywords_index = ? WHERE ref = ?",
+            external_user_access = 0, advanced_search = 1, keywords_index = ? WHERE ref = ?",
         ["s", $def["title"], "i", $def["type"], "i", $def["indexed"] ? 1 : 0, "i", $ref]
     );
-    update_resource_type_field_resource_types($ref, $restypes);
+    // Global (all resource types), so Advanced Search offers them whatever types are selected (#88).
+    update_resource_type_field_resource_types($ref, [0]);
     $submitterFields[$short] = $ref;
     $proxyFields[$short] = $ref;
+}
+clear_query_cache("schema");
+
+// ---------- unused stock fields ----------
+foreach (UNUSED_FIELDS as $short) {
+    $ref = field_ref($short);
+    if (!$ref) {
+        echo "skipped unused field    '$short' not found\n";
+        continue;
+    }
+    ps_query("UPDATE resource_type_field SET active = 0 WHERE ref = ?", ["i", $ref]);
+    echo "deactivated field       $ref $short\n";
+}
+clear_query_cache("schema");
+
+// ---------- metadata tabs ----------
+// Written with SQL because create_tab() needs a logged-in user with tab permission. The
+// stock "Default" tab (ref 1) is left alone and sorts first, but is empty once every
+// active field is placed (ResourceSpace hides empty tabs).
+$tabOrder = 20;
+$fieldOrder = 10;
+foreach (FIELD_TABS as $tabName => $shortnames) {
+    $tab = (int) ps_value("SELECT ref value FROM tab WHERE name = ? ORDER BY ref LIMIT 1", ["s", $tabName], 0);
+    if ($tab) {
+        ps_query("UPDATE tab SET order_by = ? WHERE ref = ?", ["i", $tabOrder, "i", $tab]);
+        echo "exists  tab            $tab $tabName\n";
+    } else {
+        ps_query("INSERT INTO tab (name, order_by) VALUES (?, ?)", ["s", $tabName, "i", $tabOrder]);
+        $tab = (int) sql_insert_id();
+        echo "created tab            $tab $tabName\n";
+    }
+    $tabOrder += 10;
+    foreach ($shortnames as $short) {
+        $ref = field_ref($short);
+        if (!$ref) {
+            echo "skipped tab field       '$short' not found\n";
+            continue;
+        }
+        ps_query("UPDATE resource_type_field SET tab = ?, order_by = ? WHERE ref = ?", ["i", $tab, "i", $fieldOrder, "i", $ref]);
+        $fieldOrder += 10;
+    }
+    echo "tab fields             $tabName: " . implode(", ", $shortnames) . "\n";
 }
 clear_query_cache("schema");
 
