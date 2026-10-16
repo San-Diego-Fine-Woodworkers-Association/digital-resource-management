@@ -45,7 +45,7 @@ request in the `Accessibility checks` job of `.github/workflows/upload-checks.ym
 
 ## #31's target: results
 
-Checked on 2026-10-14 against `@sdwa/components` 0.4.1 and `@sdwa/tokens` 0.4.0.
+Checked on 2026-10-14 against `@sdwa/components` 0.4.1 and `@sdwa/tokens` 0.4.0. The notices moved to `@sdwa/components` 0.5.0 on 2026-10-15 (see the design-system follow-ups below).
 
 | Target | How | Result |
 |---|---|---|
@@ -77,8 +77,8 @@ before the design-system fixes of #39.
 | Step bar and progress bar (primary) against the page | | 5.38 | 3 | pass |
 | Body text on the thank-you's green tint / the warning tint | | 12.06 / 12.52 | 4.5 | pass |
 | Card and divider border against the page | 2.34 | 2.34 | 3 | fails; left as decided on #31 (the dividers are decoration; every control has its own border) |
-| Notification body text (grey) on the info tint | | 4.27 | 4.5 | **fails**: design system (follow-up 1); the page no longer uses it |
-| Notification body text (grey) on the warning tint | | 4.55 | 4.5 | passes by a hair; the page no longer uses it |
+| Notification body text (grey) on the info tint | | 4.27 | 4.5 | failed in 0.4.1; full-strength text from 0.5.0 (follow-up 1) |
+| Notification body text (grey) on the warning tint | | 4.55 | 4.5 | passed by a hair in 0.4.1; full-strength text from 0.5.0 |
 | Red text on the warning tint | | 4.11 | 4.5 | fails; no longer drawn (fix 3) |
 
 ## What the checks found, and the fixes
@@ -89,8 +89,8 @@ before the design-system fixes of #39.
    phone), the long words were cut off; there it now says only "Video" or "Photo" (new copy,
    marked for a read-through in `copy.ts`). Same fix in the viewer's "can't be shown" box.
 2. **Grey text in the busy, offline and signed-out notices** (axe: 4.27:1 on the info tint).
-   The design system's `Notification` greys its body text. The page's notices now set their
-   text at full strength and at the page's size (`text-lg`).
+   The design system's `Notification` greyed its body text. Fixed there in 0.5.0, which also
+   sizes it from the page's large field size; the page's own wrappers are gone.
 3. **Red status on "Most of your photos are in"** (axe: 4.07:1 on the warning tint). The lines
    there are now full-strength text; the words already say what went wrong.
 4. **Tapping a tile on a 320 px phone hit the ✕.** In three columns on a narrow phone (or a
@@ -102,14 +102,19 @@ before the design-system fixes of #39.
    picture and the words could not fit side by side. The name now breaks anywhere, and the
    words go under the picture when they don't fit.
 6. **Problems had no icon** (#31: "an icon and words"). Each problem line, each row of Most
-   of your photos are in, and the title-less busy, offline and signed-out notices now start
-   with a ⚠, drawn inline as text like Sent's ✓ (with U+FE0E, so phones don't draw a colour
-   emoji) and hidden from screen readers. Decided on #86.
+   of your photos are in, now start with a ⚠, drawn inline as text like Sent's ✓ (with
+   U+FE0E, so phones don't draw a colour emoji) and hidden from screen readers. Decided on
+   #86. The title-less busy, offline and signed-out notices now get the design system's own
+   icon (0.5.0), so the page's ⚠ is no longer added there.
 7. **The member's own text size was ignored.** The page set its root size as `18px`, which
    overrides a browser's text size setting. It is now `112.5%`: 18 px at the usual setting, and
    larger when the member asks for larger.
 
-## Design-system follow-ups (`@sdwa/components`, not changed here)
+## Design-system follow-ups (done in `@sdwa/components` 0.5.0)
+
+All four were fixed in Design-System #22 / #23 and released in 0.5.0, and the page uses them.
+The page's notices sit in an always-present `NotificationRegion`. A real screen reader still
+has to confirm the announcements (below).
 
 1. **`Notification`: body text is greyed.** Its body is wrapped in `text-muted-foreground`
    (4.27:1 on the info tint, 4.55:1 on the warning tint), and `text-sm`. Suggested fix: use
@@ -140,8 +145,8 @@ desktop Chrome and Safari. (CI runs only Chromium; WebKit, iOS and Android are n
   - [ ] each photo's state read once when it changes ("Sending", "Finishing up", "Sent",
         "Couldn't save this one"), and the percent never read by itself;
   - [ ] the progress bar, when you move to it, read with its file name and percent;
-  - [ ] the offline, busy and signed-out notices read when they appear (design-system
-        follow-up 3); turn on Airplane mode while sending to get the offline one;
+  - [ ] the offline, busy and signed-out notices read when they appear (the
+        `NotificationRegion` from follow-up 3); turn on Airplane mode while sending to get the offline one;
   - [ ] each dialog keeping VoiceOver inside it until closed, and returning to its tile;
   - [ ] "Sign in again" opening a new tab, and coming back.
 - [ ] **TalkBack on Android**, the same pass.

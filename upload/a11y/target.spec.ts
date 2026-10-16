@@ -95,11 +95,15 @@ test.describe("screen readers hear each Item's state, not every percent", () => 
     }
 
     const regions = await page.evaluate(() => {
-      const live = [...document.querySelectorAll<HTMLElement>('[role="status"], [role="alert"], [aria-live]')].filter(
+      const all = [...document.querySelectorAll<HTMLElement>('[role="status"], [role="alert"], [aria-live]')].filter(
         (el) => el.getAttribute("aria-live") !== "off",
       );
+      // The page's notice region is always there (#62); with nothing to say, it is empty.
+      const region = all.filter((el) => el.dataset.slot === "notification-region");
+      const live = all.filter((el) => el.dataset.slot !== "notification-region");
       const inLive = (el: Element) => live.some((r) => r.contains(el));
       return {
+        region: region.map((el) => ({ role: el.getAttribute("role"), text: el.textContent?.trim() })),
         live: live.map((el) => {
           const heard = el.cloneNode(true) as HTMLElement;
           for (const hidden of heard.querySelectorAll("[aria-hidden]")) hidden.remove();
@@ -114,6 +118,7 @@ test.describe("screen readers hear each Item's state, not every percent", () => 
         })),
       };
     });
+    expect(regions.region).toEqual([{ role: "status", text: "" }]);
     expect(regions.live).toEqual([
       { role: "status", text: "✓ Sent" },
       { role: "status", text: "Couldn't save this one" },
@@ -352,7 +357,7 @@ test.describe("status never relies on colour alone", () => {
     await expect(page.getByText("Connection dropped. Trying again…")).toBeVisible();
     // With every colour taken away, each line still says what it is, in words and a mark.
     await page.addStyleTag({ content: "* { color: black !important; background: white !important; border-color: black !important; }" });
-    const lines = await heardAndMark(page, '[role="status"]');
+    const lines = await heardAndMark(page, '[role="status"]:not([data-slot="notification-region"])');
     expect(lines).toEqual([
       { words: "✓ Sent", mark: undefined },
       { words: "Couldn't save this one", mark: "⚠\uFE0E" },
@@ -380,7 +385,7 @@ test.describe("status never relies on colour alone", () => {
     ]);
   });
 
-  test("the notices without a title have their ⚠: offline, busy, signed out", async ({ page, context }) => {
+  test("the notices without a title have the design system's icon: offline, busy, signed out", async ({ page, context }) => {
     let answer: Answer = { status: 503, json: { error: "busy" } };
     await openPage(page, BOOTS.app, { handOff: () => answer });
     await choose(page, [await photo(page, "IMG_0001.png")]);
@@ -388,17 +393,22 @@ test.describe("status never relies on colour alone", () => {
     await toChange(page);
     await send(page);
     const notice = () => heardAndMark(page, '[data-slot="notification"]');
+    // The design system draws the variant's icon without a title (0.5.0); the page adds no ⚠ of its own.
+    const icon = () => page.locator('[data-slot="notification"] svg[aria-hidden="true"]');
     await expect(page.getByText("We're busy right now. We'll keep trying for a few minutes.")).toBeVisible();
-    expect(await notice()).toEqual([{ words: "We're busy right now. We'll keep trying for a few minutes.", mark: "⚠\uFE0E" }]);
+    expect(await notice()).toEqual([{ words: "We're busy right now. We'll keep trying for a few minutes.", mark: undefined }]);
+    await expect(icon()).toHaveCount(1);
 
     await context.setOffline(true);
     await expect(page.getByText("No internet connection.")).toBeVisible();
-    expect(await notice()).toEqual([{ words: expect.stringMatching(/^No internet connection\./), mark: "⚠\uFE0E" }]);
+    expect(await notice()).toEqual([{ words: expect.stringMatching(/^No internet connection\./), mark: undefined }]);
+    await expect(icon()).toHaveCount(1);
 
     answer = { status: 401, json: { error: "signed_out" } };
     await context.setOffline(false);
     await expect(page.getByRole("link", { name: "Sign in again" })).toBeVisible({ timeout: 10_000 });
-    expect(await notice()).toEqual([{ words: expect.stringMatching(/^You've been signed out\..*Sign in again$/), mark: "⚠\uFE0E" }]);
+    expect(await notice()).toEqual([{ words: expect.stringMatching(/^You've been signed out\..*Sign in again$/), mark: undefined }]);
+    await expect(icon()).toHaveCount(1);
   });
 
   test("the lapsed-membership notice has the design system's ⚠ by its title", async ({ page }) => {
@@ -435,8 +445,8 @@ test.describe("contrast, measured from the tokens as drawn", () => {
     { name: "Body text on the warning tint", fg: "--foreground", bg: ["--background", "warning 15%"], needs: 4.5 },
     // Below: what the design system's Notification and the Done card draw; not used for text on this page any more.
     { name: "Card and divider border against the page", fg: "--border", bg: ["--background"], needs: 3, known: "left as is on #31" },
-    { name: "Notification body (muted) on the info tint", fg: "--muted-foreground", bg: ["--background", "info 15%"], needs: 4.5, known: "design system; the page uses full-strength text instead" },
-    { name: "Notification body (muted) on the warning tint", fg: "--muted-foreground", bg: ["--background", "warning 15%"], needs: 4.5, known: "design system; the page uses full-strength text instead" },
+    { name: "Notification body (muted) on the info tint", fg: "--muted-foreground", bg: ["--background", "info 15%"], needs: 4.5, known: "Notification used it before @sdwa/components 0.5.0; its body is full-strength now" },
+    { name: "Notification body (muted) on the warning tint", fg: "--muted-foreground", bg: ["--background", "warning 15%"], needs: 4.5, known: "Notification used it before @sdwa/components 0.5.0; its body is full-strength now" },
     { name: "Red text on the warning tint", fg: "--destructive", bg: ["--background", "warning 15%"], needs: 4.5, known: "no longer drawn: Most of your photos are in uses full-strength text" },
   ];
 

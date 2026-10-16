@@ -139,6 +139,14 @@ async function describeAndSend(user: User, title = "Dovetail class, May 3") {
   await nextAndSend(user);
 }
 
+/** Each Item's own status line: every live status but the page's notice region (always on the page, #62). */
+const itemStatuses = () => screen.getAllByRole("status").filter((s) => s.dataset.slot !== "notification-region");
+const onlyItemStatus = () => {
+  const all = itemStatuses();
+  expect(all).toHaveLength(1);
+  return all[0]!;
+};
+
 describe("choosing many photos and videos", () => {
   it("says what can be sent before anything is chosen", () => {
     render(<App boot={boot} sender={fakeSender().sender} />);
@@ -624,7 +632,7 @@ describe("sending", () => {
     await pick(user, [photo("a.jpg"), photo("b.jpg"), video("c.mov"), photo("d.jpg"), photo("e.jpg")]);
     await describeAndSend(user, "Swap meet");
 
-    const statuses = () => screen.getAllByRole("status").map((s) => s.textContent);
+    const statuses = () => itemStatuses().map((s) => s.textContent);
     expect(calls.map((c) => c.file.name)).toEqual(["a.jpg", "b.jpg"]);
     expect(statuses()).toEqual(["Sending…", "Sending…", "Waiting…", "Waiting…", "Waiting…"]);
     expect(screen.getByText("0 of 5 sent.")).toBeInTheDocument();
@@ -766,7 +774,7 @@ describe("sending", () => {
     await pick(user, [photo()]);
     await describeAndSend(user);
 
-    const status = screen.getByRole("status");
+    const status = onlyItemStatus();
     expect(status).toHaveTextContent("Sending…");
     act(() => calls[0]!.events.onProgress(55));
     expect(status).not.toHaveTextContent("55");
@@ -1382,7 +1390,7 @@ describe("when things go wrong (#58)", () => {
 
   it("announces Connection trouble and Waiting for your connection to screen readers", async () => {
     const { calls } = await sendingWithClock([photo("a.jpg")]);
-    const status = screen.getByRole("status");
+    const status = onlyItemStatus();
 
     await act(async () => calls[0]!.finish({ ok: false, reason: "connection" }));
     expect(status).toHaveTextContent("Connection dropped. Trying again…");
