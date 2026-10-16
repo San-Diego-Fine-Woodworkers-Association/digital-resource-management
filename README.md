@@ -53,6 +53,8 @@ A member's photo goes up in 5 MB tus chunks to the staging volume, then the serv
 
 Develop in `upload/`: `npm ci`, then `npm run typecheck`, `npm test`, `npm run build`. The `Upload service checks` workflow runs the same on every pull request and builds the image.
 
+Accessibility checks (#62): `npm run test:a11y` builds the page and runs axe and the rest of the accessibility target over every screen and state in a real Chromium, with the service faked (`upload/a11y/`). The first time, install the browser with `npx playwright install chromium` (add `--with-deps` on a fresh Linux machine), or point `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at a Chromium you already have. `npx playwright test -g "Step 2"` runs some of them. The workflow runs them on every pull request. What they cover, and what still needs a person with a phone and a screen reader: [docs/accessibility.md](docs/accessibility.md).
+
 # Backups & recovery
 A `backup` sidecar (see `backup/` and the `backup` service in `docker-compose.yaml`) stages nightly, consistent backups onto a `backups` volume: a `--single-transaction` MariaDB dump, an incremental mirror of the `rs_assets` filestore, and — optionally — an age-encrypted snapshot of the deployment secrets. The sidecar then **pushes** that to a Hetzner Storage Box (copy 2), and an off-site/on-prem box **pulls** from the Storage Box over a read-only rsync/SSH sub-account, keeping dated snapshots (copy 3, 3-2-1). The `clip_cache`/`faces_models` volumes are intentionally skipped (regenerable).
 

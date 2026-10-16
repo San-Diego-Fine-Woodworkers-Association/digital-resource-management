@@ -8,7 +8,7 @@ import { Button, Dialog, Modal, ModalOverlay } from "@sdwa/components";
 import type { Chosen } from "./choose.ts";
 import { copy } from "./copy.ts";
 
-/** More than this many and the grid scrolls (4 rows of 3), so say so. */
+/** More than this many and the grid scrolls (4 rows of 3, or 6 of 2 on a narrow phone), so say so. */
 const VISIBLE = 12;
 
 /** An object URL for the file while the component is shown; undefined where the browser can't make one. */
@@ -23,12 +23,20 @@ function usePreviewUrl(file: File): string | undefined {
   return url;
 }
 
+/**
+ * Where the browser can't draw the photo or play the video. Dark text on a
+ * light fill (#62: the green fill it had made it unreadable). In a small
+ * square (the sending list, or a tile on a narrow phone) only the short word
+ * fits; the long one would be cut off.
+ */
 function Placeholder({ item, className = "" }: { item: Chosen; className?: string }) {
+  const video = item.kind === "video";
   return (
     <div
-      className={`flex items-center justify-center bg-secondary p-2 text-center text-sm text-muted-foreground ${className}`}
+      className={`@container flex items-center justify-center bg-accent p-1 text-center text-sm text-accent-foreground ${className}`}
     >
-      {item.kind === "video" ? copy.choose.videoNoPreview : copy.choose.noPreview}
+      <span className="hidden @min-[6.5rem]:inline">{video ? copy.choose.videoNoPreview : copy.choose.noPreview}</span>
+      <span className="@min-[6.5rem]:hidden">{video ? copy.choose.video : copy.choose.photo}</span>
     </div>
   );
 }
@@ -66,7 +74,7 @@ function FullSize({ item }: { item: Chosen }) {
   const [broken, setBroken] = useState(false);
   if (broken || !url) {
     return (
-      <p className="rounded bg-secondary p-8 text-center text-base text-muted-foreground">
+      <p className="rounded bg-accent p-8 text-center text-base text-accent-foreground">
         {item.kind === "video" ? copy.choose.videoNoPreview : copy.choose.viewerNoPreview}
       </p>
     );
@@ -128,16 +136,21 @@ export function Gallery({
   return (
     <div className="flex flex-col gap-1">
       {/* 3 columns, at most 4 rows tall before it scrolls. Container query
-          units keep that right at any width: a tile is (width - 2 gaps) / 3. */}
+          units keep that right at any width: a tile is (width - 2 gaps) / 3.
+          On a narrow phone (320 px, or a phone's zoomed display), 2 columns
+          of 6 rows: in 3, the ✕ would cover the middle of the tile, where a
+          member taps to see it bigger (#62). Either way 12 show at once. */}
       <div className="@container overflow-hidden rounded-lg border border-border">
         <ul
           ref={list}
           aria-label={copy.choose.gallery}
-          className="scrollbar-visible grid max-h-[calc((100cqw-1rem)/3*4+1.5rem)] grid-cols-3 gap-2 overflow-y-auto"
+          className="scrollbar-visible grid max-h-[calc((100cqw-0.5rem)/2*6+2.5rem)] grid-cols-2 gap-2 overflow-y-auto @min-[340px]:max-h-[calc((100cqw-1rem)/3*4+1.5rem)] @min-[340px]:grid-cols-3"
         >
           {items.map((item, index) => (
             <li key={item.key} data-key={item.key} className="relative aspect-square">
-              {/* The tile and its ✕ are drawn here, not at the large size. */}
+              {/* The tile and its ✕ are drawn here, not at the large size. The ✕
+                  is 48 px, the touch target (#31), in the very corner, so it
+                  never reaches the middle of the tile (#62). */}
               <Button
                 variant="quiet"
                 size="default"
@@ -162,7 +175,7 @@ export function Gallery({
                   size="default"
                   aria-label={copy.choose.takeOut(item.file.name)}
                   onPress={() => takeOut(index)}
-                  className="absolute right-1 top-1 size-12 rounded-full bg-black/75 p-0 text-xl text-white data-[hovered]:bg-black/90"
+                  className="absolute right-0 top-0 size-[48px] rounded-full bg-black/75 p-0 text-xl text-white data-[hovered]:bg-black/90"
                 >
                   <span aria-hidden>✕</span>
                 </Button>

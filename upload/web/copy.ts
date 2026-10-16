@@ -88,6 +88,9 @@ export const copy = {
     gallery: "Your photos and videos",
     scrollHint: (count: number) => `Scroll to see all ${count}.`,
     video: "Video",
+    // Not on #31 (#62): a photo the browser can't draw, in a square too small
+    // for noPreview, as "Video" is for a video. Needs a read-through.
+    photo: "Photo",
     seeBigger: (name: string) => `See ${name} bigger`,
     takeOut: (name: string) => `Take ${name} out`,
     bigger: (name: string) => `${name}, bigger`,
@@ -168,6 +171,11 @@ export const copy = {
     // #31's line in full; only a video takes long enough to need it (#55).
     finishingVideo: "Finishing up… (videos can take a few minutes)",
     sent: "✓ Sent",
+    // Not on #31 (#62): the mark before every problem line and notice, as ✓
+    // is before Sent (#31: "an icon and words"). Drawn as text (the U+FE0E
+    // keeps phones from turning it into a colour emoji) and hidden from
+    // screen readers, since the words say it. Needs a read-through.
+    problemIcon: "⚠\uFE0E",
     couldNotSave: "Couldn't save this one",
     // #31's Connection trouble lines (#58): trying again by itself, then
     // waiting for the member once the automatic tries run out.

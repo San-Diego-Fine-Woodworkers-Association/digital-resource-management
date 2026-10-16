@@ -30,6 +30,20 @@ export function Page({ children, user, signOutUrl }: { children: ReactNode; user
   );
 }
 
+/**
+ * A problem line or notice: the ⚠ and the words (#31, #62). The mark is
+ * drawn inline as text, as Sent's ✓ is, in the line's own colour, so long
+ * words still wrap under it with big text; screen readers hear only the
+ * words.
+ */
+export function Problem({ children }: { children: ReactNode }) {
+  return (
+    <>
+      <span aria-hidden>{copy.sending.problemIcon}</span> <span>{children}</span>
+    </>
+  );
+}
+
 const TOTAL_STEPS = copy.steps.titles.length;
 
 /**

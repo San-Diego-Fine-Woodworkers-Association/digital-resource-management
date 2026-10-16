@@ -3,3 +3,8 @@ dist
 deploy
 Dockerfile
 .dockerignore
+a11y
+playwright.config.ts
+tsconfig.a11y.json
+test-results
+playwright-report
