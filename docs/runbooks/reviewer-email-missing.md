@@ -81,6 +81,13 @@ It prints the SMTP conversation. `250 2.0.0 OK` means the relay accepted it.
 **B. The relay refused it.** Read the relay's error in
 `could not send the reviewer email`.
 
+- **`530 5.7.0 Authentication Required`:** the service is talking to Gmail's
+  ordinary server, not the relay. Check `SMTP_HOST` in Dokploy's Environment
+  tab: it must be `smtp-relay.gmail.com` (the default), never
+  `smtp.gmail.com`, which needs a password the service doesn't have. Delete the
+  line or correct it, then press Deploy. Seen on 2026-10-16. If you redeploy
+  before the last try (about 13 minutes after the first), the restart reloads
+  the pending email and sends it.
 - **The relay does not recognise the server** (for example "Invalid
   credentials for relay"): the server's public IPv4 or IPv6 is not allowed.
   This happens after a server move or an IP change. In the Google Workspace
