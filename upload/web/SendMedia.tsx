@@ -13,7 +13,7 @@
 // the queue while its Item tries again on the Connection trouble schedule.
 // Steps 1 to 3 are browser history entries (stepHistory.ts).
 import { useEffect, useRef, useState } from "react";
-import { Button, FilePickerButton, Link, Notification, ProgressBar } from "@sdwa/components";
+import { Button, FilePickerButton, Link, Notification, NotificationRegion, ProgressBar } from "@sdwa/components";
 import { SIGNED_IN_PATH, type ShellUser } from "../shared/boot.ts";
 import { changedFields, NO_DETAILS, withChanges, type Changes, type DetailField, type Details } from "../shared/details.ts";
 import { Change } from "./Change.tsx";
@@ -437,27 +437,20 @@ export function SendMedia({ sender, account }: { sender: Sender; account?: Accou
 
   // What holds the page, said once above the step (#59): signed out or no
   // longer a member first (only the member can fix it), then no connection,
-  // then a busy service, while sending.
+  // then a busy service, while sending. The region is always on the page, so
+  // a notice that appears in it is announced (#62).
   const notice =
     signIn !== null ? (
       <SignInNotice trouble={signIn} account={account} />
     ) : step === "sending" && offline ? (
-      <Notification variant="warning">
-        <p className="text-lg text-foreground">
-          <Problem>{copy.problems.offline}</Problem>
-        </p>
-      </Notification>
+      <Notification variant="warning">{copy.problems.offline}</Notification>
     ) : step === "sending" && busy ? (
-      <Notification variant="info">
-        <p className="text-lg text-foreground">
-          <Problem>{copy.problems.busy}</Problem>
-        </p>
-      </Notification>
+      <Notification variant="info">{copy.problems.busy}</Notification>
     ) : null;
 
   return (
     <>
-      {notice}
+      <NotificationRegion>{notice}</NotificationRegion>
       {screenFor()}
     </>
   );
@@ -602,19 +595,16 @@ function SignInNotice({ trouble, account }: { trouble: SignInTrouble; account?: 
           </Link>
         }
       >
-        <p className="text-lg text-foreground">
-          <Problem>{copy.problems.signedOut}</Problem>
-        </p>
+        {copy.problems.signedOut}
       </Notification>
     );
   }
   return (
     <Notification variant="warning" title={copy.notMember.title}>
-      {/* The design system's Notification greys its text; full strength here, as on the rest of the page (#62). */}
-      <div className="flex flex-col gap-3 text-foreground">
-        {account && <p className="text-lg">{copy.notMember.signedInAs(account.user.name)}</p>}
-        <p className="text-lg">{copy.notMember.explain}</p>
-        <p className="text-lg">{copy.problems.notMemberStillHere}</p>
+      <div className="flex flex-col gap-3">
+        {account && <p>{copy.notMember.signedInAs(account.user.name)}</p>}
+        <p>{copy.notMember.explain}</p>
+        <p>{copy.problems.notMemberStillHere}</p>
         {account && (
           <>
             <Link variant="primary" className="w-full" href={account.renewUrl} target="_blank" rel="noopener">
